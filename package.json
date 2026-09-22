@@ -1,0 +1,27 @@
+{
+  "name": "ai-group-chat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI 群聊小网站：零依赖 Node.js + SSE",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/e2e.js",
+    "test:session": "node test/e2e-session.js",
+    "test:stream-error": "node test/e2e-stream-error.js",
+    "test:headers": "node test/e2e-headers.js",
+    "test:storage": "node test/e2e-storage.js",
+    "test:ai": "node test/e2e-ai.js",
+    "test:multi": "node test/e2e-multi-ai.js",
+    "test:self": "node test/e2e-self.js",
+    "test:memory": "node test/e2e-memory.js",
+    "test:memory-repair": "node test/e2e-memory-repair.js",
+    "test:memory-audit": "node test/e2e-memory-audit.js",
+    "test:memory-summary": "node test/e2e-memory-summary.js",
+    "test:settings": "node test/e2e-settings.js",
+    "test:live": "node test/live-smoke.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

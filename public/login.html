@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#eaeef7" />
+    <title>登录 - AI 群聊</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/css/tokens.css" />
+    <link rel="stylesheet" href="/css/style.css" />
+    <script src="/js/theme.js"></script>
+  </head>
+  <body class="auth-body">
+    <div class="auth-theme">
+      <button class="icon-btn" type="button" data-theme-toggle>🌗</button>
+    </div>
+
+    <main class="auth-card">
+      <div class="auth-logo">🤖</div>
+      <h1>AI 群聊</h1>
+      <p class="auth-sub">使用 config.js 中配置的账号登录</p>
+
+      <form id="loginForm">
+        <label for="username">用户名</label>
+        <input id="username" name="username" type="text" required autocomplete="username" placeholder="请输入用户名" />
+
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" required autocomplete="current-password" placeholder="请输入密码" />
+
+        <div id="error" class="auth-error" role="alert" hidden></div>
+
+        <button id="loginBtn" type="submit">登 录</button>
+      </form>
+
+      <p class="auth-foot">账号由管理员维护在 config.js，无需注册</p>
+    </main>
+
+    <script src="/js/login.js"></script>
+  </body>
+</html>

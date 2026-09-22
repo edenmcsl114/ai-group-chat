@@ -1,0 +1,150 @@
+/* =========================================================
+   设计令牌（Design Tokens）
+   ---------------------------------------------------------
+   分层思路参考 GitHub 上的开源项目（均为 MIT）：
+   - argyleink/open-props  ：语义化 CSS 变量命名与尺度体系
+   - picocss/pico          ：语义 HTML 优先 + 内置深浅色
+   - saadeghi/daisyui      ：主题变量分组的组织方式
+   本项目不引入任何第三方依赖，这里按同样的思路手写一套精简令牌，
+   保证「零依赖 + 无构建 + 严格 CSP（style-src 'self'）」不变。
+
+   主题：由 js/theme.js 在 <head> 里同步写入 <html data-theme="light|dark">，
+   因此这里只需要两套静态取值，不需要在 CSS 里重复媒体查询。
+   ========================================================= */
+
+:root {
+  /* ---------- 品牌色 ---------- */
+  --brand: #5b7cfa;
+  --brand-strong: #4463e0;
+  --brand-bright: #7d93ff;
+  --brand-ink: #3f5cd4;
+  --brand-2: #8b5cf6;
+  --brand-soft: #e9edff;
+  --brand-tint: rgba(91, 124, 250, 0.1);
+  --brand-contrast: #ffffff;
+
+  /* ---------- 语义色 ---------- */
+  --danger: #e5484d;
+  --danger-soft: #feeced;
+  --danger-border: #f8cfd1;
+  --success: #1f9d63;
+  --success-soft: #e7f7ef;
+  --warning: #b7791f;
+  --warning-soft: #fdf3e2;
+
+  /* ---------- 表面与文字 ---------- */
+  --canvas: #eaeef7;
+  --surface-1: #ffffff;
+  --surface-2: #f7f9fd;
+  --surface-3: #eff2fa;
+  --surface-glass: rgba(255, 255, 255, 0.86);
+  --surface-bubble: #ffffff;
+  --surface-bubble-ai: #eef3ff;
+  --border-1: rgba(20, 33, 71, 0.1);
+  --border-2: rgba(20, 33, 71, 0.16);
+  --text-1: #182034;
+  --text-2: #5a6480;
+  --text-3: #8b93a8;
+  --scrim: rgba(15, 22, 42, 0.34);
+
+  /* 消息名字配色（浅色） */
+  --name-0: #4f6ef2;
+  --name-1: #0d9488;
+  --name-2: #db6b3a;
+  --name-3: #7c4ddb;
+  --name-4: #cf3d76;
+  --name-5: #62900c;
+
+  /* ---------- 字体 ---------- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 15px;
+  --text-lg: 17px;
+  --text-xl: 22px;
+
+  /* ---------- 间距（4 的倍数） ---------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ---------- 圆角 ---------- */
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+
+  /* ---------- 阴影 ---------- */
+  --shadow-1: 0 1px 2px rgba(18, 28, 60, 0.06);
+  --shadow-2: 0 6px 20px rgba(18, 28, 60, 0.1);
+  --shadow-3: 0 18px 48px rgba(18, 28, 60, 0.16);
+  --shadow-4: 0 28px 70px rgba(18, 28, 60, 0.22);
+  --ring: 0 0 0 4px rgba(91, 124, 250, 0.18);
+
+  /* ---------- 动效 ---------- */
+  --dur-fast: 0.14s;
+  --dur-normal: 0.22s;
+  --ease: cubic-bezier(0.32, 0.72, 0.28, 1);
+
+  /* ---------- 布局 ---------- */
+  --app-max-width: 960px;
+  --bubble-max: min(78%, 520px);
+
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --brand: #6d84ff;
+  --brand-strong: #5d74ee;
+  --brand-bright: #93a5ff;
+  --brand-ink: #a9b7ff;
+  --brand-2: #a78bfa;
+  --brand-soft: rgba(125, 147, 255, 0.16);
+  --brand-tint: rgba(125, 147, 255, 0.14);
+  --brand-contrast: #ffffff;
+
+  --danger: #ff6b6f;
+  --danger-soft: rgba(255, 107, 111, 0.14);
+  --danger-border: rgba(255, 107, 111, 0.32);
+  --success: #4ade80;
+  --success-soft: rgba(74, 222, 128, 0.14);
+  --warning: #fbbf24;
+  --warning-soft: rgba(251, 191, 36, 0.14);
+
+  --canvas: #080b13;
+  --surface-1: #141a28;
+  --surface-2: #182031;
+  --surface-3: #1e2637;
+  --surface-glass: rgba(16, 21, 33, 0.86);
+  --surface-bubble: #1b2334;
+  --surface-bubble-ai: #1c2540;
+  --border-1: rgba(255, 255, 255, 0.08);
+  --border-2: rgba(255, 255, 255, 0.16);
+  --text-1: #e9edf7;
+  --text-2: #a4aec6;
+  --text-3: #7b849b;
+  --scrim: rgba(3, 6, 14, 0.56);
+
+  --name-0: #9db0ff;
+  --name-1: #5eead4;
+  --name-2: #f9a878;
+  --name-3: #c4a6ff;
+  --name-4: #fda4c4;
+  --name-5: #b9e05f;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 20px 50px rgba(0, 0, 0, 0.5);
+  --shadow-4: 0 30px 70px rgba(0, 0, 0, 0.58);
+  --ring: 0 0 0 4px rgba(125, 147, 255, 0.28);
+
+  color-scheme: dark;
+}

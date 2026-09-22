@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#eaeef7" />
+    <title>设置 - AI 群聊</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/css/tokens.css" />
+    <link rel="stylesheet" href="/css/style.css" />
+    <link rel="stylesheet" href="/css/settings.css" />
+    <script src="/js/theme.js"></script>
+  </head>
+  <body class="settings-page">
+    <header class="settings-topbar">
+      <a class="settings-back" href="/">‹ 返回群聊</a>
+      <div class="settings-title">
+        <h1>设置</h1>
+        <p id="settingsMeta" class="settings-meta">加载中…</p>
+      </div>
+      <div class="settings-topbar-actions">
+        <label class="settings-reveal">
+          <input type="checkbox" id="revealSecrets" />
+          <span>显示密钥</span>
+        </label>
+        <button class="icon-btn" type="button" data-theme-toggle>🌗</button>
+      </div>
+    </header>
+
+    <main id="settingsSections" class="settings-main">
+      <p class="settings-loading">加载中…</p>
+    </main>
+
+    <footer class="settings-footer">
+      <div id="settingsStatus" class="settings-status" role="status"></div>
+      <div class="settings-buttons">
+        <button id="exportBtn" class="settings-btn ghost" type="button">导出</button>
+        <button id="importBtn" class="settings-btn ghost" type="button">导入</button>
+        <input id="importFile" type="file" accept="application/json,.json" hidden />
+        <button id="resetBtn" class="settings-btn danger" type="button">恢复默认</button>
+        <button id="saveBtn" class="settings-btn primary" type="button">保存并应用</button>
+      </div>
+    </footer>
+
+    <script src="/js/settings.js"></script>
+  </body>
+</html>

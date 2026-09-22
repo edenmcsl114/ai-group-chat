@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#eaeef7" />
+    <title>AI 群聊</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/css/tokens.css" />
+    <link rel="stylesheet" href="/css/style.css" />
+    <script src="/js/theme.js"></script>
+  </head>
+  <body class="chat-page">
+    <div id="app" class="app">
+      <header class="topbar">
+        <div class="room">
+          <span id="roomAvatar" class="room-avatar">🤖</span>
+          <div class="room-text">
+            <h1 id="roomTitle">AI 群聊</h1>
+            <p id="roomMeta" class="room-meta">
+              <span id="statusDot" class="status-dot"></span>
+              <span id="roomMetaText">正在连接…</span>
+            </p>
+          </div>
+        </div>
+
+        <div class="top-actions">
+          <button class="icon-btn" type="button" data-theme-toggle>🌗</button>
+          <a id="settingsBtn" class="top-link" href="/settings.html" title="设置" hidden>⚙ 设置</a>
+          <button id="historyBtn" class="top-link" type="button">历史</button>
+          <span id="meAvatar" class="me-avatar">🙂</span>
+          <span id="meName" class="me-name">…</span>
+          <button id="logoutBtn" class="logout-btn" type="button" title="退出登录">退出</button>
+        </div>
+      </header>
+
+      <main id="messages" class="messages" role="log" aria-live="polite" aria-label="群聊消息"></main>
+
+      <section id="historyPanel" class="history-panel" hidden>
+        <header class="history-head">
+          <button id="historyBackBtn" class="history-back" type="button" aria-label="返回日期列表" hidden>
+            ‹
+          </button>
+          <h2 id="historyTitle">历史消息</h2>
+          <button id="historyCloseBtn" class="history-close" type="button" aria-label="关闭历史">
+            ✕
+          </button>
+        </header>
+
+        <div id="historyDays" class="history-days">
+          <p class="history-tip">加载中…</p>
+        </div>
+
+        <div id="historyDayView" class="history-day" hidden></div>
+      </section>
+
+      <button id="scrollDownBtn" class="scroll-down" type="button" aria-label="回到最新消息" hidden>
+        ↓
+      </button>
+
+      <footer class="composer-wrap">
+        <div id="mentionBox" class="mention-box" hidden></div>
+        <form id="sendForm" class="composer" autocomplete="off">
+          <textarea
+            id="msgInput"
+            rows="1"
+            maxlength="2000"
+            placeholder="发消息给群聊…（Enter 发送，Shift+Enter 换行）"
+            aria-label="消息内容"
+          ></textarea>
+          <button id="sendBtn" class="send-btn" type="submit" title="发送" aria-label="发送" disabled>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.1"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 19.5V5.2" />
+              <path d="m5.6 11.6 6.4-6.4 6.4 6.4" />
+            </svg>
+          </button>
+        </form>
+        <div id="sendError" class="send-error" role="alert" hidden></div>
+      </footer>
+    </div>
+
+    <script src="/js/chat.js"></script>
+  </body>
+</html>
