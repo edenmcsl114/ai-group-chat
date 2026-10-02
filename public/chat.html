@@ -4,7 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#eaeef7" />
+    <meta name="theme-color" content="#f3f4f6" />
+    <meta
+      name="description"
+      content="AI 群聊：人和 AI 在同一个房间里对话，回复流式输出，历史按天归档。"
+    />
     <title>AI 群聊</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/css/tokens.css" />
@@ -12,6 +16,8 @@
     <script src="/js/theme.js"></script>
   </head>
   <body class="chat-page">
+    <a class="skip-link" href="#msgInput">跳到输入框</a>
+
     <div id="app" class="app">
       <header class="topbar">
         <div class="room">
@@ -26,9 +32,46 @@
         </div>
 
         <div class="top-actions">
-          <button class="icon-btn" type="button" data-theme-toggle>🌗</button>
-          <a id="settingsBtn" class="top-link" href="/settings.html" title="设置" hidden>⚙ 设置</a>
-          <button id="historyBtn" class="top-link" type="button">历史</button>
+          <button class="icon-btn" type="button" data-theme-toggle aria-label="切换主题">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="8.4" />
+              <path d="M12 3.6v16.8" />
+              <path d="M12 3.6a8.4 8.4 0 0 1 0 16.8" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+
+          <button
+            id="historyBtn"
+            class="top-link"
+            type="button"
+            title="历史消息"
+            aria-label="历史消息"
+          >
+            <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M3.6 12a8.4 8.4 0 1 0 2.6-6.1" />
+              <path d="M3.4 4.4v4.2h4.2" />
+              <path d="M12 7.9V12l2.9 1.7" />
+            </svg>
+            <span>历史</span>
+          </button>
+
+          <a
+            id="settingsBtn"
+            class="top-link"
+            href="/settings.html"
+            title="设置"
+            aria-label="设置"
+            hidden
+          >
+            <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M4 7.5h8.2M17.4 7.5H20" />
+              <path d="M4 16.5h3.4M12.6 16.5H20" />
+              <circle cx="14.8" cy="7.5" r="2.4" />
+              <circle cx="10" cy="16.5" r="2.4" />
+            </svg>
+            <span>设置</span>
+          </a>
+
           <span id="meAvatar" class="me-avatar">🙂</span>
           <span id="meName" class="me-name">…</span>
           <button id="logoutBtn" class="logout-btn" type="button" title="退出登录">退出</button>
@@ -37,14 +80,24 @@
 
       <main id="messages" class="messages" role="log" aria-live="polite" aria-label="群聊消息"></main>
 
-      <section id="historyPanel" class="history-panel" hidden>
+      <section id="historyPanel" class="history-panel" hidden aria-label="历史消息">
         <header class="history-head">
-          <button id="historyBackBtn" class="history-back" type="button" aria-label="返回日期列表" hidden>
-            ‹
+          <button
+            id="historyBackBtn"
+            class="history-back"
+            type="button"
+            aria-label="返回日期列表"
+            hidden
+          >
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M14.5 5.5 8 12l6.5 6.5" />
+            </svg>
           </button>
           <h2 id="historyTitle">历史消息</h2>
           <button id="historyCloseBtn" class="history-close" type="button" aria-label="关闭历史">
-            ✕
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
+            </svg>
           </button>
         </header>
 
@@ -56,7 +109,9 @@
       </section>
 
       <button id="scrollDownBtn" class="scroll-down" type="button" aria-label="回到最新消息" hidden>
-        ↓
+        <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 5v14M6.5 13.5 12 19l5.5-5.5" />
+        </svg>
       </button>
 
       <footer class="composer-wrap">
@@ -74,10 +129,11 @@
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              stroke-width="2.1"
+              stroke-width="1.8"
               stroke-linecap="round"
               stroke-linejoin="round"
               aria-hidden="true"
+              focusable="false"
             >
               <path d="M12 19.5V5.2" />
               <path d="m5.6 11.6 6.4-6.4 6.4 6.4" />

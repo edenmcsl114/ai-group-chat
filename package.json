@@ -16,6 +16,7 @@
     "test:self": "node test/e2e-self.js",
     "test:memory": "node test/e2e-memory.js",
     "test:memory-repair": "node test/e2e-memory-repair.js",
+    "test:memory-truncate": "node test/e2e-memory-truncate.js",
     "test:memory-audit": "node test/e2e-memory-audit.js",
     "test:memory-summary": "node test/e2e-memory-summary.js",
     "test:settings": "node test/e2e-settings.js",

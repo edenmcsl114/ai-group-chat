@@ -4,8 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#eaeef7" />
-    <title>设置 - AI 群聊</title>
+    <meta name="theme-color" content="#f3f4f6" />
+    <meta
+      name="description"
+      content="AI 群聊设置：账号、AI 角色、记忆策略与运行参数的统一入口。"
+    />
+    <title>设置 · AI 群聊</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/css/tokens.css" />
     <link rel="stylesheet" href="/css/style.css" />
@@ -13,23 +17,43 @@
     <script src="/js/theme.js"></script>
   </head>
   <body class="settings-page">
+    <a class="skip-link" href="#settingsSections">跳到设置内容</a>
+
     <header class="settings-topbar">
-      <a class="settings-back" href="/">‹ 返回群聊</a>
+      <a class="settings-back" href="/">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M14.5 5.5 8 12l6.5 6.5" />
+        </svg>
+        <span>返回群聊</span>
+      </a>
+
       <div class="settings-title">
         <h1>设置</h1>
         <p id="settingsMeta" class="settings-meta">加载中…</p>
       </div>
+
       <div class="settings-topbar-actions">
         <label class="settings-reveal">
           <input type="checkbox" id="revealSecrets" />
           <span>显示密钥</span>
         </label>
-        <button class="icon-btn" type="button" data-theme-toggle>🌗</button>
+        <button class="icon-btn" type="button" data-theme-toggle aria-label="切换主题">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="8.4" />
+            <path d="M12 3.6v16.8" />
+            <path d="M12 3.6a8.4 8.4 0 0 1 0 16.8" fill="currentColor" stroke="none" />
+          </svg>
+        </button>
       </div>
     </header>
 
     <main id="settingsSections" class="settings-main">
-      <p class="settings-loading">加载中…</p>
+      <div class="settings-skeleton" aria-hidden="true">
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+      <p class="sr-only" role="status">设置加载中</p>
     </main>
 
     <footer class="settings-footer">

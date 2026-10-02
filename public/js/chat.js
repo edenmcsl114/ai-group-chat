@@ -491,7 +491,12 @@ function showSystemLine(text) {
 function renderEmptyHint() {
   if (state.messages.length === 0) {
     const wrap = el('div', 'empty-state');
-    wrap.appendChild(el('div', 'empty-icon', '💬'));
+    const icon = el('div', 'empty-icon');
+    icon.innerHTML =
+      '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+      '<path d="M20.4 12.1c0 4.2-3.7 7.6-8.4 7.6-1 0-2-.2-2.9-.5l-4.5 1.4 1.4-4.2a7.3 7.3 0 0 1-1.4-4.3c0-4.2 3.7-7.6 8.4-7.6s7.4 3.4 7.4 7.6Z"/>' +
+      '</svg>';
+    wrap.appendChild(icon);
     wrap.appendChild(el('p', 'empty-title', '还没有消息'));
     wrap.appendChild(el('p', 'empty-sub', '发第一句话，开始群聊吧'));
     messagesEl.appendChild(wrap);

@@ -4,36 +4,77 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#eaeef7" />
-    <title>登录 - AI 群聊</title>
+    <meta name="theme-color" content="#f3f4f6" />
+    <meta
+      name="description"
+      content="AI 群聊：人和 AI 在同一个房间里对话，回复流式输出，历史按天归档。"
+    />
+    <title>登录 · AI 群聊</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/css/tokens.css" />
     <link rel="stylesheet" href="/css/style.css" />
     <script src="/js/theme.js"></script>
   </head>
   <body class="auth-body">
+    <a class="skip-link" href="#username">跳到登录表单</a>
+
     <div class="auth-theme">
-      <button class="icon-btn" type="button" data-theme-toggle>🌗</button>
+      <button class="icon-btn" type="button" data-theme-toggle aria-label="切换主题">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="8.4" />
+          <path d="M12 3.6v16.8" />
+          <path d="M12 3.6a8.4 8.4 0 0 1 0 16.8" fill="currentColor" stroke="none" />
+        </svg>
+      </button>
     </div>
 
-    <main class="auth-card">
-      <div class="auth-logo">🤖</div>
-      <h1>AI 群聊</h1>
-      <p class="auth-sub">使用 config.js 中配置的账号登录</p>
+    <main class="auth-shell">
+      <section class="auth-brand">
+        <p class="auth-wordmark">
+          <span class="auth-glyph" aria-hidden="true">🤖</span>
+          <span>AI 群聊</span>
+        </p>
+        <h1 class="auth-headline">你和 AI 在同一个群里说话。</h1>
+        <p class="auth-lede">
+          一个房间、一份上下文。你说一句，AI 接着聊，历史按天归档。
+        </p>
+        <ul class="auth-facts">
+          <li>账号由管理员维护在 config.js，无需注册</li>
+          <li>回复流式输出，边生成边显示</li>
+          <li>记忆按天、周、月分层保存</li>
+        </ul>
+      </section>
 
-      <form id="loginForm">
-        <label for="username">用户名</label>
-        <input id="username" name="username" type="text" required autocomplete="username" placeholder="请输入用户名" />
+      <section class="auth-panel">
+        <h2 class="auth-panel-title">登录</h2>
+        <p class="auth-panel-sub">使用 config.js 中配置的账号</p>
 
-        <label for="password">密码</label>
-        <input id="password" name="password" type="password" required autocomplete="current-password" placeholder="请输入密码" />
+        <form id="loginForm" class="auth-form">
+          <label for="username">用户名</label>
+          <input
+            id="username"
+            name="username"
+            type="text"
+            required
+            autocomplete="username"
+            placeholder="请输入用户名"
+          />
 
-        <div id="error" class="auth-error" role="alert" hidden></div>
+          <label for="password">密码</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            required
+            autocomplete="current-password"
+            placeholder="请输入密码"
+          />
 
-        <button id="loginBtn" type="submit">登 录</button>
-      </form>
+          <p id="error" class="auth-error" role="alert" hidden></p>
 
-      <p class="auth-foot">账号由管理员维护在 config.js，无需注册</p>
+          <button id="loginBtn" type="submit">登录</button>
+        </form>
+      </section>
     </main>
 
     <script src="/js/login.js"></script>

@@ -660,6 +660,65 @@ const MEMORY_CATEGORIES = ['事实', '事件', '偏好', '计划', '情绪/状�
 const MEMORY_DROP_CATEGORY = '无意义闲聊';
 let memoryChain = Promise.resolve(); // 串行执行跨天压缩，避免并发写同一批文件
 
+// ---------------- 记忆任务运行记录 ----------------
+// 每次「压缩追平 / 启动审计」都会留下一份结果摘要，写到 data/memory/_last-run.json，
+// 并在设置页展示。目的是让压缩失败/输出被截断当天就能被发现，而不是过几天才察觉记忆断档。
+const MEMORY_LAST_RUN_FILE = path.join(MEMORY_DIR, '_last-run.json');
+let lastMemoryRun = null;
+let currentMemoryRun = null;
+
+function beginMemoryRun(trigger) {
+  const run = { trigger, startedAt: Date.now(), events: [] };
+  currentMemoryRun = run;
+  return run;
+}
+
+function recordMemoryEvent(run, level, key, status, message) {
+  if (!run) return;
+  run.events.push({
+    level: String(level || ''),
+    key: String(key || ''),
+    status: String(status || ''),
+    message: message ? String(message).slice(0, 300) : '',
+    at: Date.now(),
+  });
+}
+
+async function finishMemoryRun(run) {
+  if (!run) return null;
+  run.finishedAt = Date.now();
+  const failed = run.events.filter((e) => e.status === 'failed');
+  const truncated = run.events.filter((e) => e.status === 'truncated');
+  const summary = {
+    trigger: run.trigger,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    ok: failed.length === 0,
+    failedCount: failed.length,
+    truncatedCount: truncated.length,
+    truncated: truncated.slice(0, 10),
+    failed: failed.slice(0, 10),
+  };
+  lastMemoryRun = summary;
+  if (currentMemoryRun === run) currentMemoryRun = null;
+  try {
+    await fs.promises.mkdir(MEMORY_DIR, { recursive: true });
+    await fs.promises.writeFile(MEMORY_LAST_RUN_FILE, JSON.stringify(summary, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[记忆] 写入运行状态失败：', err && err.message ? err.message : err);
+  }
+  return summary;
+}
+
+async function readLastMemoryRun() {
+  if (lastMemoryRun) return lastMemoryRun;
+  try {
+    return JSON.parse(await fs.promises.readFile(MEMORY_LAST_RUN_FILE, 'utf8'));
+  } catch (_err) {
+    return null;
+  }
+}
+
 function getMemorySettings() {
   const raw = config.memory;
   if (!raw || raw.enabled === false) return null;
@@ -1004,6 +1063,46 @@ function normalizeMemoryCategory(value) {
   return hit || '事实';
 }
 
+// 模型输出撞到 max_tokens 时会断在任意位置。这里按括号深度扫描文本，
+// 把已经写完整的 {...} 逐个还原出来（正确跳过字符串内的引号与转义），
+// 丢掉最后那个写了一半的，保证「宁可少几条，也不要整层压缩失败」。
+function salvageJsonObjects(text) {
+  const src = String(text || '');
+  const objects = [];
+  const stack = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') {
+      stack.push(i);
+      continue;
+    }
+    if (ch === '}') {
+      const start = stack.pop();
+      if (start === undefined) continue;
+      try {
+        const obj = JSON.parse(src.slice(start, i + 1));
+        if (obj && typeof obj === 'object') objects.push(obj);
+      } catch (_err) {
+        // 该对象自身不完整，直接丢弃
+      }
+    }
+  }
+  return objects;
+}
+
 function parseMemoryEntries(rawReply, fallbackMember, fallbackTime) {
   const cleaned = String(rawReply || '')
     .trim()
@@ -1046,40 +1145,80 @@ function parseMemoryEntries(rawReply, fallbackMember, fallbackTime) {
 
   const entries = [];
   const seen = new Set();
-  for (const item of rawItems) {
+  const pushItem = (item) => {
+    if (!item || typeof item !== 'object') return;
     const content = String(item.content == null ? '' : item.content).trim();
-    if (!content) continue;
+    if (!content) return;
     const category = normalizeMemoryCategory(item.category);
-    if (category === MEMORY_DROP_CATEGORY) continue;
+    if (category === MEMORY_DROP_CATEGORY) return;
     const member = String(item.member == null ? fallbackMember || '' : item.member).trim();
     const time = String(item.time == null ? fallbackTime || '' : item.time).trim();
     const dedupeKey = `${category}|${member}|${time}|${content}`;
-    if (seen.has(dedupeKey)) continue;
+    if (seen.has(dedupeKey)) return;
     seen.add(dedupeKey);
     entries.push({ category, member, time, content });
+  };
+  for (const item of rawItems) pushItem(item);
+
+  // JSON 解析失败（多半是被截断）时，抢救出完整的条目
+  let truncated = false;
+  if (!valid && entries.length === 0) {
+    for (const item of salvageJsonObjects(cleaned)) pushItem(item);
+    truncated = entries.length > 0;
   }
-  return { valid, entries };
+
+  return { valid: valid || entries.length > 0, entries, truncated };
 }
 
+const MEMORY_LEVEL_LABELS = {
+  daily: '当日',
+  weekly: '本周',
+  monthly: '本月',
+  quarter: '本季度',
+  year: '本年度',
+};
+
+// 各层默认的「压缩策略」文案。可以在 config.js 里用 memory.prompts.<level> 逐层覆盖，
+// 覆盖只影响策略部分；下面的输出格式、分类白名单、篇幅硬限制始终会追加，保证输出格式不变。
+// 可用占位符：{{level}} {{levelLabel}} {{budget}} {{maxEntries}} {{categories}} {{dropCategory}} {{upRoll}}
+const MEMORY_DEFAULT_PROMPTS = {
+  daily: '把这一天群里的内容整理成结构化记忆，覆盖当天的事实、事件、偏好、计划与情绪状态。',
+  weekly: '把本周的日记忆上卷成周记忆：合并同一主题与重复说法，保留仍然有效的信息，已被新信息取代的旧说法不要再保留。',
+  monthly: '把本月的周记忆上卷成月记忆：按「人物 + 长期事实」重组，只保留一个月后仍然有用的内容，日常琐事合并成一句话。',
+  quarter: '把本季度的月记忆上卷成季度记忆：只保留长期稳定的人物画像、偏好、关系变化与重要事件。',
+  year: '把本年的季度记忆上卷成年度记忆：只保留跨季度仍然成立的长期信息，其余一律合并或删除。',
+};
+
 function memorySystemPrompt(level, budget, isUpRoll) {
-  const levelLabel = {
-    daily: '当日',
-    weekly: '本周',
-    monthly: '本月',
-    quarter: '本季度',
-    year: '本年度',
-  }[level];
+  const levelLabel = MEMORY_LEVEL_LABELS[level] || '';
+  const custom = ((config.memory && config.memory.prompts) || {})[level];
+  const template = String(custom == null ? MEMORY_DEFAULT_PROMPTS[level] || '' : custom);
+  const maxEntries = Math.max(8, Math.floor(Math.max(1, Number(budget) || 1) / 55));
+  const upRollText = isUpRoll
+    ? '输入已经是较低层级的记忆条目：请更新旧信息、合并同类项，新信息覆盖旧信息，避免重复。'
+    : '';
+  const usesUpRollPlaceholder = /\{\{upRoll\}\}/.test(template);
+  const strategy = template
+    .trim()
+    .replace(/\{\{level\}\}/g, String(level))
+    .replace(/\{\{levelLabel\}\}/g, levelLabel)
+    .replace(/\{\{budget\}\}/g, String(budget))
+    .replace(/\{\{maxEntries\}\}/g, String(maxEntries))
+    .replace(/\{\{categories\}\}/g, MEMORY_CATEGORIES.join('、'))
+    .replace(/\{\{dropCategory\}\}/g, MEMORY_DROP_CATEGORY)
+    .replace(/\{\{upRoll\}\}/g, upRollText);
+
   const parts = [
-    `你是群聊长期记忆压缩助手。请把给定的群聊记录压缩成${levelLabel || ''}结构化记忆，供群成员 AI 之后参考。`,
+    `你是群聊长期记忆压缩助手。本次压缩的是${levelLabel || ''}的群聊内容，供群成员 AI 之后参考。`,
+    strategy,
     '必须区分「哪个成员」和「什么时间」。',
     `分类只允许：${MEMORY_CATEGORIES.join('、')}。`,
     `「${MEMORY_DROP_CATEGORY}」不要输出；「临时信息」保留并标注。`,
-    '只输出一个 JSON 对象，不要代码块、不要解释：{"entries":[{"category":"事实","member":"小智","time":"2026-09-10 14:03","content":"..."}]}。',
-    `总输出控制在 ${budget} tokens 以内；同一成员、同一主题尽量合并，不要重复。`,
-  ];
-  if (isUpRoll) {
-    parts.push('输入已经是较低层级的记忆条目：请更新旧信息、合并同类项，新信息覆盖旧信息，避免重复。');
-  }
+    '输出格式固定，不要改动：只输出一个 JSON 对象，不要代码块、不要解释：{"entries":[{"category":"事实","member":"小智","time":"2026-09-10 14:03","content":"..."}]}。',
+    `篇幅硬限制（必须遵守）：entries 总数不超过 ${maxEntries} 条，每条 content 不超过 40 字；同一成员、同一主题必须合并成一条，禁止逐条照抄原文。`,
+    `总输出必须在 ${budget} tokens 以内写完，写完立刻停止；宁可少写几条，也不要写不完被截断。`,
+  ].filter((line) => String(line || '').trim());
+  if (upRollText && !usesUpRollPlaceholder) parts.push(upRollText);
   return parts.join('\n');
 }
 
@@ -1128,26 +1267,30 @@ async function requestMemoryCompression(settings, level, content, budget, isUpRo
       throw new Error(`记忆压缩接口返回 HTTP ${res.status}：${String(detail).slice(0, 200)}`);
     }
     const payload = await res.json();
-    const contentText =
-      (payload.choices &&
-        payload.choices[0] &&
-        payload.choices[0].message &&
-        payload.choices[0].message.content) ||
-      '';
+    const choice = (payload.choices && payload.choices[0]) || {};
+    const contentText = (choice.message && choice.message.content) || '';
     if (!String(contentText).trim()) throw new Error('记忆压缩返回内容为空');
-    return String(contentText);
+    // finish_reason=length 表示输出被 max_tokens 截断，调用方据此记录「已抢救」而不是失败
+    return {
+      content: String(contentText),
+      finishReason: String(choice.finish_reason || ''),
+      completionTokens: Number((payload.usage && payload.usage.completion_tokens) || 0),
+    };
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function generateDailyMemory(dateKey) {
+async function generateDailyMemory(dateKey, run) {
   const settings = getMemorySettings();
   if (!memoryIsReady(settings)) return { status: 'skipped' };
 
   const messages = await getDayMessages(dateKey);
   const usable = messages.filter((m) => m.role === 'user' || m.role === 'ai');
-  if (usable.length === 0) return { status: 'skipped' };
+  if (usable.length === 0) {
+    recordMemoryEvent(run, 'daily', dateKey, 'skipped', '当天没有消息');
+    return { status: 'skipped' };
+  }
 
   const parts = usable.map(formatMessageForMemory);
   const chunks = splitMemoryInput(parts, settings.maxInputChars);
@@ -1156,10 +1299,22 @@ async function generateDailyMemory(dateKey) {
   const allEntries = [];
 
   for (const chunk of chunks) {
-    const raw = await requestMemoryCompression(settings, 'daily', chunk, budgetPerChunk, false);
-    const parsed = parseMemoryEntries(raw, '', dateKey);
+    const result = await requestMemoryCompression(settings, 'daily', chunk, budgetPerChunk, false);
+    const parsed = parseMemoryEntries(result.content, '', dateKey);
     if (!parsed.valid) {
       throw new Error(`日压缩返回无法解析的内容：${dateKey}`);
+    }
+    if (parsed.truncated) {
+      console.warn(
+        `[记忆] 日压缩输出被截断（finish_reason=${result.finishReason || 'length'}，预算 ${budgetPerChunk} tokens）：${dateKey}，已抢救 ${parsed.entries.length} 条`
+      );
+      recordMemoryEvent(
+        run,
+        'daily',
+        dateKey,
+        'truncated',
+        `输出被截断，已保留 ${parsed.entries.length} 条`
+      );
     }
     if (parsed.entries.length) allEntries.push(...parsed.entries);
   }
@@ -1177,10 +1332,11 @@ async function generateDailyMemory(dateKey) {
   if (settings.debug) {
     console.log(`[记忆] 日压缩完成 ${dateKey}：${entries.length} 条`);
   }
+  recordMemoryEvent(run, 'daily', dateKey, 'done', `${entries.length} 条`);
   return { status: 'done' };
 }
 
-async function ensureValidSources(startDate, endDate, maxLevel) {
+async function ensureValidSources(startDate, endDate, maxLevel, run) {
   const maxIndex = MEMORY_LEVEL_ORDER.indexOf(maxLevel);
   let cursor = startDate;
 
@@ -1204,7 +1360,7 @@ async function ensureValidSources(startDate, endDate, maxLevel) {
       }
 
       if (status.status === 'invalid') {
-        await repairMemoryFile(level, key);
+        await repairMemoryFile(level, key, run);
         cursor = addDaysKey(range.end, 1);
         advanced = true;
         break;
@@ -1217,33 +1373,67 @@ async function ensureValidSources(startDate, endDate, maxLevel) {
   }
 }
 
-async function repairMemoryFile(level, key) {
-  const result =
-    level === 'daily'
-      ? await generateDailyMemory(key)
-      : await generatePeriodMemory(level, periodDateKey(level, key));
+// 周期层压缩失败后短暂冷却：否则每条群消息触发的追平都会重复请求同一个必然失败的压缩
+// （例如月压缩输出被截断），既费额度又刷日志。日层不设冷却，保留「失败后立刻重试」的行为。
+const MEMORY_REPAIR_COOLDOWN_MS = 5 * 60 * 1000;
+const memoryRepairBackoff = new Map(); // `${level}:${key}` -> 上次失败时间
 
-  if (result.status === 'skipped') {
-    await deleteMemoryFile(level, key);
-  }
-
-  return result;
-}
-
-async function ensureLatestCompletedPeriodsValid(today) {
-  for (const level of ['weekly', 'monthly', 'quarter', 'year']) {
-    const key = latestCompletedPeriodKey(level, today);
-    const status = await inspectMemoryFile(level, key);
-    if (status.status !== 'valid') {
-      await repairMemoryFile(level, key);
+async function repairMemoryFile(level, key, run) {
+  const backoffKey = `${level}:${key}`;
+  if (level !== 'daily') {
+    const failedAt = memoryRepairBackoff.get(backoffKey) || 0;
+    if (Date.now() - failedAt < MEMORY_REPAIR_COOLDOWN_MS) {
+      recordMemoryEvent(run, level, key, 'cooldown', '上次压缩失败，冷却中不重复请求');
+      return { status: 'skipped', reason: 'cooldown' };
     }
   }
+
+  try {
+    const result =
+      level === 'daily'
+        ? await generateDailyMemory(key, run)
+        : await generatePeriodMemory(level, periodDateKey(level, key), run);
+
+    if (result.status === 'skipped') {
+      await deleteMemoryFile(level, key);
+    }
+    memoryRepairBackoff.delete(backoffKey);
+    return result;
+  } catch (err) {
+    if (level !== 'daily') memoryRepairBackoff.set(backoffKey, Date.now());
+    throw err;
+  }
+}
+
+// 逐层修复最近一个已完成周期：某一层失败只记录日志，绝不影响其它层。
+// 返回「已确认可用」的层级 → key，调用方据此推进状态，避免同一层在一次运行里被压缩两遍。
+async function ensureLatestCompletedPeriodsValid(today, run) {
+  const validKeys = {};
+  for (const level of ['weekly', 'monthly', 'quarter', 'year']) {
+    const key = latestCompletedPeriodKey(level, today);
+    try {
+      const status = await inspectMemoryFile(level, key);
+      if (status.status !== 'valid') {
+        const repaired = await repairMemoryFile(level, key, run);
+        // 冷却中跳过的不算「已可用」，避免把状态推进到一个并不存在的文件上
+        if (repaired && repaired.reason === 'cooldown') continue;
+      }
+      validKeys[level] = key;
+    } catch (err) {
+      console.error(
+        `[记忆] 修复 ${level} ${key} 失败，等待下次重试：`,
+        err && err.message ? err.message : err
+      );
+      recordMemoryEvent(run, level, key, 'failed', err && err.message ? err.message : String(err));
+    }
+  }
+  return validKeys;
 }
 
 async function gatherMemorySources(startDate, endDate, maxLevel, options = {}) {
   const shouldRepair = options.repair !== false;
   if (shouldRepair) {
-    await ensureValidSources(startDate, endDate, maxLevel);
+    await ensureValidSources(startDate, endDate, maxLevel, options.run);
   }
 
   const maxIndex = MEMORY_LEVEL_ORDER.indexOf(maxLevel);
@@ -1283,20 +1473,23 @@ async function gatherMemorySources(startDate, endDate, maxLevel, options = {}) {
   return sources;
 }
 
-async function generatePeriodMemory(level, refDateKey) {
+async function generatePeriodMemory(level, refDateKey, run) {
   const settings = getMemorySettings();
   if (!memoryIsReady(settings)) return { status: 'skipped' };
 
   const range = periodRange(level, refDateKey);
   const lowerLevel = MEMORY_LEVEL_ORDER[MEMORY_LEVEL_ORDER.indexOf(level) - 1];
-  const sources = await gatherMemorySources(range.start, range.end, lowerLevel);
+  const sources = await gatherMemorySources(range.start, range.end, lowerLevel, { run });
 
   const entries = [];
   for (const source of sources) {
     entries.push(...source.entries);
   }
 
-  if (entries.length === 0) return { status: 'skipped' };
+  if (entries.length === 0) {
+    recordMemoryEvent(run, level, periodKey(level, refDateKey), 'skipped', '没有可上卷的下层记忆');
+    return { status: 'skipped' };
+  }
 
   const parts = entries.map((entry) => formatMemoryEntries([entry]));
   const chunks = splitMemoryInput(parts, settings.maxInputChars);
@@ -1305,10 +1498,22 @@ async function generatePeriodMemory(level, refDateKey) {
   const allEntries = [];
 
   for (const chunk of chunks) {
-    const raw = await requestMemoryCompression(settings, level, chunk, budgetPerChunk, true);
-    const parsed = parseMemoryEntries(raw, '', refDateKey);
+    const result = await requestMemoryCompression(settings, level, chunk, budgetPerChunk, true);
+    const parsed = parseMemoryEntries(result.content, '', refDateKey);
     if (!parsed.valid) {
       throw new Error(`${level} 压缩返回无法解析的内容：${refDateKey}`);
+    }
+    if (parsed.truncated) {
+      console.warn(
+        `[记忆] ${level} 输出被截断（finish_reason=${result.finishReason || 'length'}，预算 ${budgetPerChunk} tokens）：${refDateKey}，已抢救 ${parsed.entries.length} 条`
+      );
+      recordMemoryEvent(
+        run,
+        level,
+        periodKey(level, refDateKey),
+        'truncated',
+        `输出被截断，已保留 ${parsed.entries.length} 条`
+      );
     }
     if (parsed.entries.length) allEntries.push(...parsed.entries);
   }
@@ -1328,6 +1533,7 @@ async function generatePeriodMemory(level, refDateKey) {
     console.log(`[记忆] ${level} 压缩完成 ${key}：${merged.length} 条`);
   }
 
+  recordMemoryEvent(run, level, key, 'done', `${merged.length} 条`);
   return { status: 'done' };
 }
 
@@ -1338,8 +1544,8 @@ async function ensureMemoryCaughtUp() {
   const yesterday = addDaysKey(today, -1);
   const persistedState = await readMemoryState();
   const state = Object.assign({}, memoryStateDefaults(), persistedState || {});
-  let changed = false;
-  let aborted = false;
+  const run = beginMemoryRun('catch-up');
+  let dailyOk = true;
 
   // 首次启用且还没有状态文件时，先把基线状态落盘。
   // 否则内存中的默认 lastDailyDate 已经是“昨天”，今天不会产生 changed，
@@ -1348,54 +1554,65 @@ async function ensureMemoryCaughtUp() {
     await writeMemoryState(state);
   }
 
-  // 1. 修复最近已完成周期里损坏的高层文件
-  try {
-    await ensureLatestCompletedPeriodsValid(today);
-  } catch (err) {
-    console.error('[记忆] 修复损坏记忆失败，等待下次重试：', err.message);
-    aborted = true;
+  // 1. 修复最近已完成周期里损坏/缺失的高层文件。
+  //    逐层独立容错：月压缩失败不会再让日压缩也停下来。
+  const repairedKeys = await ensureLatestCompletedPeriodsValid(today, run);
+  let changed = false;
+  for (const [level, key] of Object.entries(repairedKeys)) {
+    const field = `last${capitalize(level)}Key`;
+    if (state[field] !== key) {
+      state[field] = key;
+      changed = true;
+    }
   }
+  if (changed) await writeMemoryState(state);
 
-  // 2. 日层追平
-  if (!aborted && dateKeyCompare(state.lastDailyDate, yesterday) < 0) {
+  // 2. 日层追平：每压缩完一天就立刻落盘进度，避免后面的层失败把进度一起丢掉
+  if (dateKeyCompare(state.lastDailyDate, yesterday) < 0) {
     let cursor = addDaysKey(state.lastDailyDate, 1);
     while (dateKeyCompare(cursor, yesterday) <= 0) {
       try {
-        await generateDailyMemory(cursor);
+        await generateDailyMemory(cursor, run);
         state.lastDailyDate = cursor;
-        changed = true;
+        await writeMemoryState(state);
         cursor = addDaysKey(cursor, 1);
       } catch (err) {
-        console.error(`[记忆] 日压缩失败，等待下次重试：${cursor}`, err.message);
-        aborted = true;
+        console.error(
+          `[记忆] 日压缩失败，等待下次重试：${cursor}`,
+          err && err.message ? err.message : err
+        );
+        recordMemoryEvent(run, 'daily', cursor, 'failed', err && err.message ? err.message : String(err));
+        dailyOk = false;
         break;
       }
     }
   }
 
-  // 3. 周/月/季/年追平
-  if (!aborted) {
+  // 3. 周/月/季/年追平：每层各自 try/catch，互不阻塞
+  if (dailyOk) {
     for (const level of ['weekly', 'monthly', 'quarter', 'year']) {
       const latestKey = latestCompletedPeriodKey(level, today);
       if (dateKeyCompare(state[`last${capitalize(level)}Key`], latestKey) >= 0) continue;
       let cursor = nextPeriodKey(level, state[`last${capitalize(level)}Key`]);
       while (dateKeyCompare(cursor, latestKey) <= 0) {
         try {
-          await generatePeriodMemory(level, periodDateKey(level, cursor));
+          await generatePeriodMemory(level, periodDateKey(level, cursor), run);
           state[`last${capitalize(level)}Key`] = cursor;
-          changed = true;
+          await writeMemoryState(state);
           cursor = nextPeriodKey(level, cursor);
         } catch (err) {
-          console.error(`[记忆] ${level} 压缩失败，等待下次重试：${cursor}`, err.message);
-          aborted = true;
+          console.error(
+            `[记忆] ${level} 压缩失败，等待下次重试：${cursor}`,
+            err && err.message ? err.message : err
+          );
+          recordMemoryEvent(run, level, cursor, 'failed', err && err.message ? err.message : String(err));
           break;
         }
       }
-      if (aborted) break;
     }
   }
 
-  if (changed) await writeMemoryState(state);
+  await finishMemoryRun(run);
 }
 
 function capitalize(value) {
@@ -1472,35 +1689,53 @@ function advancePeriodStart(level, dateKey) {
   throw new Error(`未知记忆层级 ${level}`);
 }
 
-async function ensureDailyFilesForRange(startDate, endDate) {
+// 逐日补齐缺失/损坏的日记忆：单日失败只记录并继续，返回是否全部成功。
+async function ensureDailyFilesForRange(startDate, endDate, run) {
   let cursor = startDate;
+  let ok = true;
   while (dateKeyCompare(cursor, endDate) <= 0) {
-    const status = await inspectMemoryFile('daily', cursor);
-    if (status.status === 'invalid') {
-      await repairMemoryFile('daily', cursor);
-    } else if (status.status === 'missing') {
-      await generateDailyMemory(cursor);
+    try {
+      const status = await inspectMemoryFile('daily', cursor);
+      if (status.status === 'invalid') {
+        await repairMemoryFile('daily', cursor, run);
+      } else if (status.status === 'missing') {
+        await generateDailyMemory(cursor, run);
+      }
+    } catch (err) {
+      ok = false;
+      console.error(`[记忆] 审计日记忆失败：${cursor}`, err && err.message ? err.message : err);
+      recordMemoryEvent(run, 'daily', cursor, 'failed', err && err.message ? err.message : String(err));
     }
     cursor = addDaysKey(cursor, 1);
   }
+  return ok;
 }
 
-async function ensurePeriodFilesForRange(level, startDate, endDate) {
+// 逐个周期补齐：某一层/某个周期失败不影响其它层级
+async function ensurePeriodFilesForRange(level, startDate, endDate, run) {
   let cursor = periodStartDateKey(level, startDate);
+  let ok = true;
   while (true) {
     const range = periodRange(level, cursor);
     if (dateKeyCompare(range.end, endDate) > 0) break;
 
     const key = periodKey(level, cursor);
-    const status = await inspectMemoryFile(level, key);
-    if (status.status === 'invalid') {
-      await repairMemoryFile(level, key);
-    } else if (status.status === 'missing') {
-      await generatePeriodMemory(level, periodDateKey(level, key));
+    try {
+      const status = await inspectMemoryFile(level, key);
+      if (status.status === 'invalid') {
+        await repairMemoryFile(level, key, run);
+      } else if (status.status === 'missing') {
+        await generatePeriodMemory(level, periodDateKey(level, key), run);
+      }
+    } catch (err) {
+      ok = false;
+      console.error(`[记忆] 审计 ${level} ${key} 失败：`, err && err.message ? err.message : err);
+      recordMemoryEvent(run, level, key, 'failed', err && err.message ? err.message : String(err));
     }
 
     cursor = advancePeriodStart(level, cursor);
   }
+  return ok;
 }
 
 async function auditMemoryFilesAtStartup() {
@@ -1513,19 +1748,35 @@ async function auditMemoryFilesAtStartup() {
   if (dayKeys.length === 0) return;
 
   const startDate = dayKeys[0];
+  const run = beginMemoryRun('startup-audit');
 
-  await ensureDailyFilesForRange(startDate, yesterday);
+  const dailyOk = await ensureDailyFilesForRange(startDate, yesterday, run);
+  const periodOk = {};
   for (const level of ['weekly', 'monthly', 'quarter', 'year']) {
-    await ensurePeriodFilesForRange(level, startDate, yesterday);
+    periodOk[level] = await ensurePeriodFilesForRange(level, startDate, yesterday, run);
   }
 
-  await writeMemoryState({
-    lastDailyDate: yesterday,
-    lastWeeklyKey: latestCompletedPeriodKey('weekly', today),
-    lastMonthlyKey: latestCompletedPeriodKey('monthly', today),
-    lastQuarterKey: latestCompletedPeriodKey('quarter', today),
-    lastYearKey: latestCompletedPeriodKey('year', today),
-  });
+  // 只按「确实补齐了」的结果推进状态：失败的层级保持原值，等下一次重试
+  const persisted = (await readMemoryState()) || {};
+  const next = Object.assign({}, memoryStateDefaults(), persisted);
+  if (dailyOk) next.lastDailyDate = yesterday;
+  for (const level of ['weekly', 'monthly', 'quarter', 'year']) {
+    if (periodOk[level]) next[`last${capitalize(level)}Key`] = latestCompletedPeriodKey(level, today);
+  }
+  await writeMemoryState(next);
+
+  const failedLevels = Object.keys(periodOk).filter((level) => !periodOk[level]);
+  if (!dailyOk || failedLevels.length > 0) {
+    console.warn(
+      `[记忆] 启动审计有失败项（${[
+        dailyOk ? '' : 'daily',
+        ...failedLevels,
+      ]
+        .filter(Boolean)
+        .join('、')}），已保留成功的部分，失败层级下次会重试`
+    );
+  }
+  await finishMemoryRun(run);
 }
 
 let startupMemoryAuditQueued = false;
@@ -3196,6 +3447,27 @@ function buildRoomInfo() {
   };
 }
 
+// 记忆系统运行状态（设置页展示用）：是否启用、各层预算、自定义提示词、最近一次运行结果
+async function buildMemoryStatus() {
+  const settings = getMemorySettings();
+  if (!settings) return { enabled: false, running: false, lastRun: null };
+  const prompts = (config.memory && config.memory.prompts) || {};
+  return {
+    enabled: true,
+    running: !!currentMemoryRun,
+    storageDir: path.relative(ROOT, MEMORY_DIR) || MEMORY_DIR,
+    levels: {
+      daily: Number(settings.budgets.daily) || 2000,
+      weekly: Number(settings.budgets.weekly) || 3000,
+      monthly: Number(settings.budgets.monthly) || 5000,
+      quarter: Number(settings.budgets.quarter) || 6000,
+      year: Number(settings.budgets.year) || 8000,
+    },
+    customPrompts: Object.keys(prompts).filter((level) => String(prompts[level] || '').trim()),
+    lastRun: await readLastMemoryRun(),
+  };
+}
+
 // 写操作要求同源：优先看浏览器的 Sec-Fetch-Site，其次比对 Origin/Referer 的主机
 function isSameOriginRequest(req) {
   const headers = (req && req.headers) || {};
@@ -3804,19 +4076,27 @@ function handleApi(req, res, url) {
     } catch (_err) {
       hasOverride = false;
     }
-    sendJson(res, 200, {
-      ok: true,
-      config,
-      meta: {
-        baseFile: path.basename(BASE_CONFIG_FILE),
-        settingsFile: path.basename(SETTINGS_FILE),
-        hasOverride,
-        savedAt,
-        restartFields: SETTINGS_RESTART_FIELDS.map(([, label]) => label),
-        adminUsers: (config.users || []).filter(isAdminUser).map((u) => u.username),
-        currentUser: (getSessionUser(req) || {}).username || '',
-      },
-    });
+    buildMemoryStatus()
+      .then((memory) => {
+        sendJson(res, 200, {
+          ok: true,
+          config,
+          meta: {
+            baseFile: path.basename(BASE_CONFIG_FILE),
+            settingsFile: path.basename(SETTINGS_FILE),
+            hasOverride,
+            savedAt,
+            restartFields: SETTINGS_RESTART_FIELDS.map(([, label]) => label),
+            adminUsers: (config.users || []).filter(isAdminUser).map((u) => u.username),
+            currentUser: (getSessionUser(req) || {}).username || '',
+            memory,
+          },
+        });
+      })
+      .catch((err) => {
+        console.error('[记忆] 读取运行状态失败：', err && err.message ? err.message : err);
+        sendJson(res, 500, { ok: false, message: '读取记忆运行状态失败' });
+      });
     return true;
   }
 

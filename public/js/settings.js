@@ -473,7 +473,100 @@ const SCHEMA = [
 
 function renderAll() {
   sectionsEl.textContent = '';
+  const status = renderMemoryStatus();
+  if (status) sectionsEl.appendChild(status);
   for (const section of SCHEMA) sectionsEl.appendChild(renderSection(section));
+}
+
+const MEMORY_LEVEL_TEXT = { daily: '日', weekly: '周', monthly: '月', quarter: '季', year: '年' };
+
+function formatRunTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// 记忆最近一次运行状态：压缩失败/输出被截断当天就能看见，
+// 不用再等 AI 自己发现「记忆断档」。
+function renderMemoryStatus() {
+  const memory = state.meta && state.meta.memory;
+  if (!memory) return null;
+
+  const wrap = el('section', 'settings-section');
+  const head = el('header', 'settings-section-head');
+  head.appendChild(el('h2', null, '长期记忆运行状态'));
+  head.appendChild(
+    el('p', 'settings-section-desc', '每次启动审计与定时追平的结果，写完后立刻更新')
+  );
+  wrap.appendChild(head);
+
+  const body = el('div', 'settings-section-body');
+  wrap.appendChild(body);
+  const grid = el('div', 'memory-status-grid');
+  const run = memory.lastRun;
+
+  const addItem = (label, value, kind) => {
+    const item = el('div', 'memory-status-item');
+    item.appendChild(el('span', 'field-label', label));
+    item.appendChild(el('span', kind ? `memory-chip ${kind}` : 'memory-chip', value));
+    grid.appendChild(item);
+  };
+
+  if (!memory.enabled) {
+    addItem('状态', '未启用', 'warn');
+  } else {
+    if (memory.running) addItem('状态', '正在运行…', 'ok');
+    else if (!run) addItem('状态', '还没有运行记录', 'warn');
+    else if (!run.ok) addItem('状态', `上次有 ${run.failedCount} 项失败`, 'bad');
+    else if (run.truncatedCount > 0) addItem('状态', `正常（${run.truncatedCount} 项被截断）`, 'warn');
+    else addItem('状态', '正常', 'ok');
+
+    if (run) {
+      addItem(
+        '最近一次',
+        `${run.trigger === 'startup-audit' ? '启动审计' : '定时/消息追平'} · ${formatRunTime(
+          run.finishedAt || run.startedAt
+        )}`
+      );
+    }
+
+    const levels = memory.levels || {};
+    addItem(
+      '各层预算（tokens）',
+      ['daily', 'weekly', 'monthly', 'quarter', 'year']
+        .map((level) => `${MEMORY_LEVEL_TEXT[level]} ${levels[level] || '-'}`)
+        .join(' / ')
+    );
+
+    if (Array.isArray(memory.customPrompts) && memory.customPrompts.length > 0) {
+      body.appendChild(
+        el(
+          'p',
+          'field-hint',
+          `已自定义提示词：${memory.customPrompts.join('、')}（未列出的层级用内置默认）`
+        )
+      );
+    }
+  }
+
+  body.insertBefore(grid, body.firstChild);
+
+  const problems = []
+    .concat((run && run.failed) || [])
+    .concat((run && run.truncated) || [])
+    .slice(0, 6);
+  if (problems.length > 0) {
+    const list = el('ul', 'memory-list');
+    for (const item of problems) {
+      list.appendChild(
+        el('li', null, `[${item.level}] ${item.key || ''} ${item.message || item.status}`.trim())
+      );
+    }
+    body.appendChild(list);
+  }
+
+  return wrap;
 }
 
 function renderMeta() {
@@ -482,7 +575,7 @@ function renderMeta() {
   if (meta.baseFile) parts.push(`默认配置 ${meta.baseFile}`);
   parts.push(meta.hasOverride ? `已保存到 ${meta.settingsFile}` : '当前未保存过覆盖配置');
   if (meta.adminUsers && meta.adminUsers.length) parts.push(`admin：${meta.adminUsers.join('、')}`);
-  metaEl.textContent = parts.join(' · ');
+  metaEl.textContent = parts.join(' / ');
 }
 
 // ---------------- 数据加载与保存 ----------------

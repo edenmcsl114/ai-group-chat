@@ -11,8 +11,25 @@
   var STORAGE_KEY = 'ai-group-chat:theme';
   var MODES = ['system', 'light', 'dark'];
   var LABELS = { system: '跟随系统', light: '浅色', dark: '深色' };
-  var ICONS = { system: '🌗', light: '☀️', dark: '🌙' };
-  var THEME_COLORS = { light: '#eaeef7', dark: '#080b13' };
+  // 图标统一走项目内置的线性图标规格（单一线宽、currentColor），
+  // 不依赖任何图标字体或外部资源，符合零依赖 + 严格 CSP。
+  var SVG_ATTRS =
+    'class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"';
+  var ICONS = {
+    system:
+      '<svg ' +
+      SVG_ATTRS +
+      '><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6v16.8"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8" fill="currentColor" stroke="none"/></svg>',
+    light:
+      '<svg ' +
+      SVG_ATTRS +
+      '><circle cx="12" cy="12" r="4"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5"/></svg>',
+    dark:
+      '<svg ' +
+      SVG_ATTRS +
+      '><path d="M20.4 14.6A8.6 8.6 0 0 1 9.4 3.6a8.6 8.6 0 1 0 11 11Z"/></svg>',
+  };
+  var THEME_COLORS = { light: '#f3f4f6', dark: '#0d0f13' };
 
   var root = document.documentElement;
   var media =
@@ -50,7 +67,7 @@
     var buttons = document.querySelectorAll('[data-theme-toggle]');
     for (var i = 0; i < buttons.length; i += 1) {
       var btn = buttons[i];
-      btn.textContent = ICONS[mode] || ICONS.system;
+      btn.innerHTML = ICONS[mode] || ICONS.system;
       btn.title = '主题：' + (LABELS[mode] || LABELS.system) + '（点击切换）';
       btn.setAttribute('aria-label', btn.title);
       btn.setAttribute('data-theme-state', mode);
