@@ -207,6 +207,46 @@ const MEMORY_BUDGET_FIELDS = [
   { path: 'memory.budgets.year', label: '年记忆 tokens', type: 'number', min: 1 },
 ];
 
+// 各层压缩提示词：只覆盖「怎么压缩」，输出 JSON 格式、分类白名单与篇幅硬限制
+// 由服务端固定追加（见 server.js 的 memorySystemPrompt），所以改这里不会破坏解析。
+const MEMORY_PROMPT_FIELDS = [
+  {
+    path: 'memory.prompts.daily',
+    label: '日压缩提示词',
+    type: 'textarea',
+    wide: true,
+    hint: '把当天消息整理成结构化记忆时，希望它侧重什么',
+  },
+  {
+    path: 'memory.prompts.weekly',
+    label: '周压缩提示词',
+    type: 'textarea',
+    wide: true,
+    hint: '把一周的日记忆上卷时，哪些信息要合并、哪些可以丢',
+  },
+  {
+    path: 'memory.prompts.monthly',
+    label: '月压缩提示词',
+    type: 'textarea',
+    wide: true,
+    hint: '把一个月上卷成长期事实时的取舍（最容易超预算的一层）',
+  },
+  {
+    path: 'memory.prompts.quarter',
+    label: '季压缩提示词',
+    type: 'textarea',
+    wide: true,
+    hint: '按季度保留人物画像、偏好与重要事件',
+  },
+  {
+    path: 'memory.prompts.year',
+    label: '年压缩提示词',
+    type: 'textarea',
+    wide: true,
+    hint: '跨季度仍然成立的长期信息',
+  },
+];
+
 const MEMORY_THINKING_FIELDS = [
   { path: 'memory.thinking.enabled', label: '启用思考模型', type: 'checkbox' },
   {
@@ -302,13 +342,14 @@ function renderFields(container, target, fields) {
   container.appendChild(grid);
 }
 
-function renderGroup(container, title, target, fields, open) {
+function renderGroup(container, title, target, fields, open, desc) {
   const details = document.createElement('details');
   details.className = 'field-group';
   if (open) details.open = true;
   const summary = document.createElement('summary');
   summary.textContent = title;
   details.appendChild(summary);
+  if (desc) details.appendChild(el('p', 'field-group-desc', desc));
   renderFields(details, target, fields);
   container.appendChild(details);
 }
@@ -329,7 +370,7 @@ function renderSection(section) {
     renderFields(body, state.config, section.fields);
     if (section.groups) {
       for (const group of section.groups) {
-        renderGroup(body, group.title, state.config, group.fields, group.open !== false);
+        renderGroup(body, group.title, state.config, group.fields, group.open !== false, group.desc);
       }
     }
   }
@@ -374,7 +415,7 @@ function renderListSection(container, section) {
     renderFields(card, item, section.fields);
     if (section.groups) {
       for (const group of section.groups) {
-        renderGroup(card, group.title, item, group.fields, group.open === true);
+        renderGroup(card, group.title, item, group.fields, group.open === true, group.desc);
       }
     }
     cards.appendChild(card);
@@ -462,10 +503,17 @@ const SCHEMA = [
   {
     id: 'memory',
     title: '长期记忆',
-    desc: '分层压缩模型与各层 token 预算',
+    desc: '分层压缩模型、各层 token 预算与压缩提示词',
     fields: MEMORY_FIELDS,
     groups: [
       { title: '各层 token 预算', fields: MEMORY_BUDGET_FIELDS, open: true },
+      {
+        title: '各层压缩提示词',
+        desc:
+          '留空即用内置默认（留空保存后仍按默认执行）。可用占位符 {{budget}}、{{maxEntries}}、{{categories}}、{{dropCategory}}、{{upRoll}}；' +
+          '输出 JSON 格式、分类白名单与篇幅硬限制由服务端固定追加，改这里不会破坏解析。',
+        fields: MEMORY_PROMPT_FIELDS,
+      },
       { title: '思考模型', fields: MEMORY_THINKING_FIELDS },
     ],
   },

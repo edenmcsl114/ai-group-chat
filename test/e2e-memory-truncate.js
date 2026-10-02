@@ -24,6 +24,7 @@ let childApp = null;
 let logs = '';
 let currentScenario = null;
 let weeklyMode = 'truncate';
+const memoryRequests = [];
 
 function request(method, apiPath, body, cookie) {
   return new Promise((resolve, reject) => {
@@ -134,6 +135,7 @@ function startMockAI() {
         const body = JSON.parse(raw);
         const system = String((body.messages && body.messages[0] && body.messages[0].content) || '');
         const level = memoryLevelOf(system);
+        memoryRequests.push({ level, system });
 
         if (level === 'weekly' && weeklyMode === 'fail') {
           res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -180,6 +182,7 @@ function scenarioPaths(name) {
 
 function writeScenario(name, mockPort, options) {
   const paths = scenarioPaths(name);
+  memoryRequests.length = 0;
   const today = shKey(Date.now());
   const yesterday = addDaysKey(today, -1);
   const weekKey = latestCompletedKey('weekly', today);
@@ -247,6 +250,7 @@ function writeScenario(name, mockPort, options) {
       maxInputChars: 60000,
       backfillOnStartup: options.backfillOnStartup !== false,
       budgets: { daily: 2000, weekly: 3000, monthly: 5000, quarter: 6000, year: 8000 },
+      prompts: options.prompts || {},
       storageDir: path.relative(ROOT, paths.memoryDir).replace(/\\/g, '/'),
     },
   };
@@ -331,9 +335,40 @@ function ok(text) {
 async function scenarioTruncated() {
   console.log('\n[1/2] 输出被截断时保留已完整的条目');
   weeklyMode = 'truncate';
-  const paths = writeScenario('truncate', mockServer.address().port, {});
+  const paths = writeScenario('truncate', mockServer.address().port, {
+    prompts: {
+      // 自定义 + 占位符；weekly 显式留空，用来验证「留空回退内置默认」
+      daily: '自定义日压缩策略：最多 {{maxEntries}} 条，只留长期有用信息。',
+      weekly: '',
+    },
+  });
   startApp(paths.configPath);
   await waitForApp();
+
+  // ---- 各层提示词装配 ----
+  await waitFor(() => memoryRequests.some((r) => r.level === 'daily'), 20000, '等待日压缩请求');
+  const dailyRequest = memoryRequests.find((r) => r.level === 'daily');
+  assert(
+    dailyRequest.system.includes('自定义日压缩策略'),
+    '设置里的自定义日提示词应进入请求'
+  );
+  assert(!dailyRequest.system.includes('{{maxEntries}}'), '占位符应被替换成实际数字');
+  assert(
+    dailyRequest.system.includes('输出格式固定') && dailyRequest.system.includes('"entries"'),
+    '固定输出格式与 JSON 样例仍应追加'
+  );
+  ok('自定义提示词生效、占位符被替换、输出格式约束保持不变');
+
+  const weeklyRequest = memoryRequests.find((r) => r.level === 'weekly');
+  assert(
+    weeklyRequest && weeklyRequest.system.includes('把本周的日记忆上卷成周记忆'),
+    '提示词留空的层级应回退到内置默认'
+  );
+  assert(
+    !weeklyRequest.system.includes('自定义日压缩策略'),
+    '不同层级的提示词不应互相串用'
+  );
+  ok('留空的层级回退内置默认，各层互不串用');
 
   const weeklyFile = memoryPath('weekly', currentScenario.weekKey);
   await waitFor(() => fs.existsSync(weeklyFile), 20000, '等待周记忆（被截断）落盘');

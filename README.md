@@ -145,7 +145,7 @@
 | `maxInputChars` | 单次发给记忆模型的输入字符上限，超过会自动分段请求并合并 |
 | `backfillOnStartup` | 启动时是否扫描历史消息补齐缺失的记忆文件 |
 | `budgets.daily` / `weekly` / `monthly` / `quarter` / `year` | 各层压缩产物的目标 token 上限，默认 2k / 3k / 5k / 6k / 8k |
-| `prompts.daily` / `weekly` / `monthly` / `quarter` / `year` | 各层压缩策略提示词，留空用内置默认；**只影响「怎么压缩」，输出 JSON 格式与分类白名单由服务端固定追加** |
+| `prompts.daily` / `weekly` / `monthly` / `quarter` / `year` | 各层压缩策略提示词，留空用内置默认；**只影响「怎么压缩」，输出 JSON 格式与分类白名单由服务端固定追加**；也可以在设置界面「长期记忆 → 各层压缩提示词」里直接改 |
 | `storageDir` | 记忆文件目录，默认 `data/memory` |
 
 `prompts` 可用占位符：`{{level}}`、`{{levelLabel}}`、`{{budget}}`、`{{maxEntries}}`、`{{categories}}`、`{{dropCategory}}`、`{{upRoll}}`。例如想让月压缩更狠一点、只留长期事实：
@@ -206,7 +206,7 @@
 - 登录账号：增删账号、改密码、改头像、授予/取消 admin
 - AI 成员：增删成员，以及人设、接口、密钥、模型、思考参数、自我判断覆盖项
 - 聊天与回复：回复模式、@ 规则、`@所有人` 关键词、自我判断参数、存储目录
-- 长期记忆：开关、压缩模型、各层 token 预算、分段阈值、存储目录
+- 长期记忆：开关、压缩模型、各层 token 预算、**各层压缩提示词**、分段阈值、存储目录
 
 保存行为：
 

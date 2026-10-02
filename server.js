@@ -1179,7 +1179,8 @@ const MEMORY_LEVEL_LABELS = {
 };
 
 // 各层默认的「压缩策略」文案。可以在 config.js 里用 memory.prompts.<level> 逐层覆盖，
-// 覆盖只影响策略部分；下面的输出格式、分类白名单、篇幅硬限制始终会追加，保证输出格式不变。
+// 也可以直接在设置界面「各层压缩提示词」里改（写入 data/settings.json 覆盖层）。
+// 留空/不写即用默认；覆盖只影响策略部分，下面的输出格式、分类白名单、篇幅硬限制始终会追加。
 // 可用占位符：{{level}} {{levelLabel}} {{budget}} {{maxEntries}} {{categories}} {{dropCategory}} {{upRoll}}
 const MEMORY_DEFAULT_PROMPTS = {
   daily: '把这一天群里的内容整理成结构化记忆，覆盖当天的事实、事件、偏好、计划与情绪状态。',
@@ -1192,7 +1193,8 @@ const MEMORY_DEFAULT_PROMPTS = {
 function memorySystemPrompt(level, budget, isUpRoll) {
   const levelLabel = MEMORY_LEVEL_LABELS[level] || '';
   const custom = ((config.memory && config.memory.prompts) || {})[level];
-  const template = String(custom == null ? MEMORY_DEFAULT_PROMPTS[level] || '' : custom);
+  const hasCustom = typeof custom === 'string' && custom.trim().length > 0;
+  const template = hasCustom ? custom : MEMORY_DEFAULT_PROMPTS[level] || '';
   const maxEntries = Math.max(8, Math.floor(Math.max(1, Number(budget) || 1) / 55));
   const upRollText = isUpRoll
     ? '输入已经是较低层级的记忆条目：请更新旧信息、合并同类项，新信息覆盖旧信息，避免重复。'
@@ -3598,6 +3600,14 @@ function normalizeSettings(raw) {
     if (isPlainObject(cfg.memory.budgets)) {
       for (const key of ['daily', 'weekly', 'monthly', 'quarter', 'year']) num(cfg.memory.budgets, key);
     }
+    // 各层压缩提示词：统一成字符串并去掉首尾空白；空串表示「用内置默认」
+    if (isPlainObject(cfg.memory.prompts)) {
+      for (const key of MEMORY_LEVEL_ORDER) {
+        const value = cfg.memory.prompts[key];
+        if (value === undefined || value === null) continue;
+        cfg.memory.prompts[key] = String(value).trim();
+      }
+    }
   }
   return cfg;
 }
@@ -3763,6 +3773,18 @@ function validateSettings(cfg) {
       for (const key of ['daily', 'weekly', 'monthly', 'quarter', 'year']) {
         if (cfg.memory.budgets[key] !== undefined) {
           numeric(cfg.memory.budgets[key], `memory.budgets.${key}`, { integer: true, min: 1 });
+        }
+      }
+    }
+    if (cfg.memory.prompts !== undefined) {
+      if (!isPlainObject(cfg.memory.prompts)) {
+        errors.push('memory.prompts 必须是对象');
+      } else {
+        for (const key of MEMORY_LEVEL_ORDER) {
+          const value = cfg.memory.prompts[key];
+          if (value === undefined) continue;
+          if (typeof value !== 'string') errors.push(`memory.prompts.${key} 必须是字符串`);
+          else if (value.length > 4000) errors.push(`memory.prompts.${key} 不能超过 4000 字`);
         }
       }
     }

@@ -412,6 +412,13 @@
   border-radius: var(--radius-xs);
 }
 
+.field-group-desc {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
 .field-group .field-grid {
   margin-top: var(--space-4);
 }

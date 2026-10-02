@@ -276,12 +276,39 @@ async function main() {
   assert(noAdminRes.status === 400, '不允许去掉最后一个 admin');
   ok('至少保留一个 admin 账号');
 
+  // ---- 各层压缩提示词：长度校验 ----
+  const longPromptConfig = JSON.parse(JSON.stringify(settings.config));
+  longPromptConfig.memory = Object.assign({}, longPromptConfig.memory, {
+    prompts: { daily: 'x'.repeat(4001) },
+  });
+  const longPromptRes = await request(
+    'POST',
+    '/api/settings',
+    { config: longPromptConfig },
+    adminLogin.cookie,
+    { Origin: ORIGIN }
+  );
+  const longPromptData = JSON.parse(longPromptRes.body);
+  assert(
+    longPromptRes.status === 400 &&
+      (longPromptData.errors || []).some((e) => e.includes('memory.prompts.daily')),
+    '过长的压缩提示词被拒绝'
+  );
+  ok('过长的压缩提示词被校验拦截');
+
   // ---- 保存并立即生效 ----
   const nextConfig = JSON.parse(JSON.stringify(settings.config));
   nextConfig.ais[0].name = '小智改';
   nextConfig.users.push({ username: 'user3', password: 'user3-pass', avatar: '🙂', role: 'user' });
   nextConfig.sessionDays = 3;
   nextConfig.chat.aiReplyMode = 'hybrid';
+  nextConfig.memory = Object.assign({}, nextConfig.memory, {
+    // 顺手验证「在设置界面里启用记忆 + 自定义提示词」这条路径
+    enabled: true,
+    prompts: Object.assign({}, nextConfig.memory && nextConfig.memory.prompts, {
+      monthly: '自定义月压缩策略：只保留长期事实（最多 {{maxEntries}} 条）',
+    }),
+  });
   const saveRes = await request(
     'POST',
     '/api/settings',
@@ -303,6 +330,22 @@ async function main() {
   const user3Login = await login('user3', 'user3-pass');
   assert(user3Login.status === 200 && user3Login.cookie, '新增账号可以立即登录');
   ok('配置保存后立即生效');
+
+  const afterSettings = JSON.parse(
+    (await request('GET', '/api/settings', null, adminLogin.cookie)).body
+  );
+  assert(
+    afterSettings.config.memory &&
+      afterSettings.config.memory.prompts &&
+      String(afterSettings.config.memory.prompts.monthly).includes('自定义月压缩策略'),
+    '压缩提示词保存后立即生效'
+  );
+  assert(
+    Array.isArray(afterSettings.meta.memory.customPrompts) &&
+      afterSettings.meta.memory.customPrompts.includes('monthly'),
+    `记忆运行状态里标出自定义过提示词的层级（实际 ${JSON.stringify(afterSettings.meta.memory)}）`
+  );
+  ok('压缩提示词可保存、立即生效，并在记忆状态里标出');
 
   // ---- 改密码强制下线 ----
   const passwordConfig = JSON.parse(JSON.stringify(nextConfig));
