@@ -359,10 +359,10 @@ function ok(message) {
 }
 
 function parseAIBody(text) {
-  const m = String(text || '').match(
-    /^\[\d{4}\/\d{2}\/\d{2}\]\[\d{2}:\d{2}:\d{2}\]\[小智\]\{(.*)\}$/s
-  );
-  return m ? m[1] : null;
+  // AI 回复现在只存纯正文；这里兼容历史数据里的旧包装
+  const raw = String(text || '');
+  const legacy = raw.match(/^\[\d{4}\/\d{2}\/\d{2}\]\[\d{2}:\d{2}:\d{2}\]\[[^\]]*\]\{(.*)\}$/s);
+  return legacy ? legacy[1] : raw;
 }
 
 async function main() {
@@ -405,7 +405,10 @@ async function main() {
   const finalMsg = await userA.next('message', 15000);
   assert(finalMsg.message.role === 'ai', '最终消息为 AI 角色');
   assert(finalMsg.message.name === '小智' && finalMsg.message.avatar === '🤖', 'AI 使用配置的名字与头像');
-  assert(parseAIBody(finalMsg.message.text) === EXPECTED_AI_TEXT, `AI 回复格式为 [日期][时间][小智]{正文}`);
+  assert(
+    finalMsg.message.text === EXPECTED_AI_TEXT,
+    `AI 回复应是纯正文，不带日期/时间/名字包装（实际：${finalMsg.message.text}）`
+  );
   assert(finalMsg.message.streaming !== true, '最终消息不再标记流式');
   assert(!String(finalMsg.message.text || '').includes(REASONING_TEXT), '思考过程没有出现在 AI 回复里');
   assert(finalMsg.message.aiId === 'legacy-小智', 'AI 消息带 aiId 标识');
@@ -422,8 +425,8 @@ async function main() {
   const last = msgs[msgs.length - 1];
   assert(last.role === 'user', '最后一条是用户消息');
   assert(
-    /^\[\d{4}\/\d{2}\/\d{2}\]\[\d{2}:\d{2}:\d{2}\]\[小明\]\{大家好\}$/.test(last.content),
-    `用户消息带 [日期][时间][用户名] 前缀（实际：${last.content}）`
+    /^\[\d{2}:\d{2}\] 小明：大家好$/.test(last.content),
+    `用户消息带 [HH:MM] 名字： 前缀（实际：${last.content}）`
   );
   assert(
     !capturedRequest.body.messages.some((m) => String(m.content).includes(OLD_TEXT)),
@@ -439,30 +442,25 @@ async function main() {
   assert(echo2.message.text === secondText, '收到第二条用户消息');
   const final2 = await userA.next('message', 15000);
   assert(
-    final2.message.role === 'ai' && parseAIBody(final2.message.text) === EXPECTED_AI_TEXT,
-    '第二条 AI 回复完成'
+    final2.message.role === 'ai' && final2.message.text === EXPECTED_AI_TEXT,
+    `第二条 AI 回复完成（模型返回旧包装，服务端应剥成纯正文；实际：${final2.message.text}）`
   );
 
   const msgs2 = capturedRequest.body.messages;
   const assistant = msgs2.find((m) => m.role === 'assistant');
   assert(assistant, '第二次请求包含上一条 AI 回复作为 assistant 历史');
   assert(
-    new RegExp(
-      `^\\[\\d{4}/\\d{2}/\\d{2}\\]\\[\\d{2}:\\d{2}:\\d{2}\\]\\[小智\\]\\{${EXPECTED_AI_TEXT.replace(
-        /[.*+?^${}()|[\]\\]/g,
-        '\\$&'
-      )}\\}$`
-    ).test(assistant.content),
-    `AI 历史回复带 [日期][时间][小智]{内容} 前缀（实际：${assistant.content}）`
+    assistant.content === EXPECTED_AI_TEXT,
+    `AI 自己的历史只给正文（实际：${assistant.content}）`
   );
-  ok('AI 回复在上下文中也遵循统一前缀格式');
+  ok('AI 自己的历史只给正文，不再带时间/名字/大括号');
 
   // 重新连接应能看到 AI 回复在历史里
   const reconn = await connectSSE(cookieA);
   const snapAgain = await reconn.next('snapshot');
   const aiMsgs = snapAgain.history.filter((m) => m.role === 'ai');
   assert(
-    aiMsgs.length >= 1 && parseAIBody(aiMsgs[aiMsgs.length - 1].text) === EXPECTED_AI_TEXT,
+    aiMsgs.length >= 1 && aiMsgs[aiMsgs.length - 1].text === EXPECTED_AI_TEXT,
     '历史包含完整 AI 回复'
   );
   assert(aiMsgs[aiMsgs.length - 1].aiId === 'legacy-小智', '历史中的 AI 消息保留 aiId');

@@ -164,6 +164,21 @@ const CHAT_FIELDS = [
     options: ['self', 'hybrid', 'off'],
     hint: 'self = 每个 AI 先判断再回复；hybrid = 随机一位；off = 不自动回复',
   },
+  {
+    path: 'chat.contextTimePrefix',
+    label: '上下文时间前缀',
+    type: 'select',
+    options: ['short', 'timeOnly', 'full'],
+    hint:
+      'short：其他人“[19:07] 小智：正文”、自己的历史只给正文（推荐）；timeOnly：只给时间，发言人靠 name 字段；full：旧格式，仅回滚用',
+  },
+  {
+    path: 'chat.useNameField',
+    label: '附带 name 字段',
+    type: 'select',
+    options: ['off', 'auto', 'force'],
+    hint: 'off：不发（实测模型读不到 name，名字已写在正文里）；auto：仅 ASCII 名；force：总是发',
+  },
   { path: 'chat.silentOnHumanOnlyMention', label: '只 @ 人类时保持沉默', type: 'checkbox' },
   { path: 'chat.aiReplyOnAIMention', label: 'AI @ AI 时触发对方', type: 'checkbox' },
   { path: 'chat.aiMentionMaxHops', label: 'AI 互 @ 最大轮数（hybrid）', type: 'number', min: 0 },

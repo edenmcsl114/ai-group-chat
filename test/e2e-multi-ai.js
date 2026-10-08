@@ -469,14 +469,16 @@ async function main() {
   const lastBody = requests[requests.length - 1];
   const assistants = lastBody.messages.filter((m) => m.role === 'assistant');
   const aiAsUsers = lastBody.messages.filter(
-    (m) => m.role === 'user' && String(m.content).includes('[小智]')
+    (m) => m.role === 'user' && /^\[\d{2}:\d{2}\] 小智：/.test(String(m.content))
   );
   assert(assistants.length >= 1, '小悟的上下文包含 assistant 历史');
   assert(
-    assistants.every((m) => String(m.content).includes('[小悟]') && !String(m.content).includes('[小智]')),
-    'assistant 历史里只有小悟自己说的话'
+    assistants.every(
+      (m) => !String(m.content).includes('小智：') && !/^\[\d{2}:\d{2}\]/.test(String(m.content))
+    ),
+    'assistant 历史里只有小悟自己的正文（不带时间与名字前缀）'
   );
-  assert(aiAsUsers.length >= 1, '小智的发言被当作带名字的 user 消息');
+  assert(aiAsUsers.length >= 1, '小智的发言被当作带名字的 user 消息（[HH:MM] 小智：…）');
   ok('上下文角色隔离正确：自己的话当 assistant，其他 AI 当 user');
 
   // 6. AI @ AI：小智回复里 @ 小悟，小悟应被触发回复（且不无限循环）

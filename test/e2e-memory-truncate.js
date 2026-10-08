@@ -359,6 +359,11 @@ async function scenarioTruncated() {
   );
   ok('自定义提示词生效、占位符被替换、输出格式约束保持不变');
 
+  await waitFor(
+    () => memoryRequests.some((r) => r.level === 'weekly'),
+    20000,
+    '等待周压缩请求'
+  );
   const weeklyRequest = memoryRequests.find((r) => r.level === 'weekly');
   assert(
     weeklyRequest && weeklyRequest.system.includes('把本周的日记忆上卷成周记忆'),

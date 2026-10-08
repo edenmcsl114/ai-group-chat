@@ -9,6 +9,7 @@
     "test": "node test/e2e.js",
     "test:session": "node test/e2e-session.js",
     "test:stream-error": "node test/e2e-stream-error.js",
+    "test:context-format": "node test/e2e-context-format.js",
     "test:headers": "node test/e2e-headers.js",
     "test:storage": "node test/e2e-storage.js",
     "test:ai": "node test/e2e-ai.js",

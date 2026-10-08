@@ -125,6 +125,16 @@ module.exports = {
     // off    = 不自动回复
     // 注意：旧配置里的 router 调度 AI 已废弃，会被忽略并按 self 处理
     "aiReplyMode": "self",
+    // 上下文消息格式（发给 AI 的历史消息怎么渲染）
+    //   short（默认）：其他成员 → "[19:07] 小智：正文"；AI 自己的历史只给正文本身
+    //   timeOnly    ：其他成员 → "[19:07] 正文"，发言人只靠 name 字段
+    //   full        ：旧格式 "[2026/09/06][19:07:23][小智]{正文}"，仅用于回滚
+    "contextTimePrefix": "short",
+    // messages 里是否附带 name 字段承载发言人
+    //   off（默认）：不发。实测模型读不到 name，且名字已写在正文里（[19:07] 小智：…）
+    //   auto       ：名字是 ASCII 时才发（OpenAI 规范要求 name 匹配 [a-zA-Z0-9_-]{1,64}）
+    //   force      ：总是发（接口接受中文名，但模型可能忽略）
+    "useNameField": "off",
     "silentOnHumanOnlyMention": true,
     "aiReplyOnAIMention": true,
     // 下面两个 hop 上限只在 hybrid 模式下生效

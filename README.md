@@ -65,7 +65,7 @@
 | `name` / `avatar` | AI 在群里的名字与头像 |
 | `persona` | AI 人设（系统提示词） |
 | `historyCount` | 每次发送给 AI 的“今日消息”条数上限 |
-| `prefixAiReplies` | 已废弃：AI 回复始终以 `[日期][时间][AI名]{...}` 格式记录，此配置不再生效 |
+| `prefixAiReplies` | 已废弃：AI 回复现在只存纯正文（时间与名字存 `time` / `name` 字段），此配置不再生效 |
 | `streamReply` | 是否流式打字回复，默认 `false` |
 | `apiBaseUrl` | OpenAI 兼容地址，如 `https://api.deepseek.com/v1` |
 | `apiKey` | API 密钥，仅保存在服务端 |
@@ -174,6 +174,20 @@
 
 每个 AI 拥有独立的串行队列。给某个 AI 看上下文时，它自己过去的话作为 `assistant`，其他人和其他 AI 的话作为带名字的 `user`，避免它把别人的发言当成自己说的。
 
+### 上下文消息格式与成本
+
+AI 回复**只输出纯正文**（不再包 `[日期][时间][名字]{...}`），时间与名字由服务端写进 `time` / `name` 字段。发给模型的历史消息按 `chat.contextTimePrefix` 渲染：
+
+| 取值 | 渲染方式 | 说明 |
+| --- | --- | --- |
+| `short`（默认） | 其他人 `[19:07] 小智：正文`；AI 自己的历史只给正文 | 日期放在 system 的“今天是 …”里，前缀只保留到分钟 |
+| `timeOnly` | 其他人 `[19:07] 正文` | 发言人只靠 `name` 字段承载，需配合 `useNameField` 使用 |
+| `full` | 旧格式 `[2026/09/06][19:07:23][小智]{正文}` | 仅用于回滚 |
+
+`chat.useNameField` 控制是否在 messages 里附带 `name` 字段：`off`（默认，实测模型读不到 name，且名字已写在正文里）、`auto`（仅 ASCII 名）、`force`（总是发；接口接受中文名，但模型可能忽略）。`timeOnly` 与 `off` 同时出现会让 AI 分不清发言人，启动时会打印告警。
+
+实测（2026-09-30 最近 60 条真实消息）：旧格式 prompt 6,158 tokens，`short` 格式 5,489 tokens，**少 10.9%**；前缀缓存本身在工作（第二次请求命中 95.6%），所以这里省的是 token 量而不是命中率。
+
 ## 分层长期记忆
 
 群成员 AI 的原始上下文只包含“今天 00:00 起”的消息，更早内容由独立的记忆压缩模型按自然日历逐层上卷：
@@ -244,6 +258,7 @@ npm run test:memory-audit  # 启动时补齐缺失记忆文件自测
 npm run test:memory-summary # 多层记忆同时进入 AI 上下文自测
 npm run test:settings # 设置界面：admin 门禁 / 保存生效 / 持久化 / 恢复默认自测
 npm run test:stream-error # 流式失败清理气泡自测（模拟 AI）
+npm run test:context-format # 上下文消息格式（纯正文输出 / 时间前缀 / name 字段 / 回滚）自测
 npm run test:headers # Cache-Control / 安全响应头自测
 npm run test:live   # 真实 API 联调（需已填 Key 且服务已启动）
 ```

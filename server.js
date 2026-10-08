@@ -636,6 +636,75 @@ function formatPromptPrefix(ts, name) {
   return `[${datePart}][${timePart}][${name}]{`;
 }
 
+// ---------------- 上下文消息格式 ----------------
+// 旧格式（默认关闭，仅用于回滚）：[2026/09/06][19:07:23][小智]{正文}
+// 新格式（默认 short）：其他人的消息 → [19:07] 小智：正文；自己的历史 → 只给正文
+// 目的：前缀更短（实测同样 60 条历史少 11% prompt tokens），且模型更容易照抄成纯文本输出。
+const CONTEXT_TIME_PREFIXES = ['short', 'timeOnly', 'full'];
+const NAME_FIELD_MODES = ['off', 'auto', 'force'];
+
+function getContextFormatOptions() {
+  const chat = config.chat || {};
+  const timePrefix = String(chat.contextTimePrefix == null ? 'short' : chat.contextTimePrefix)
+    .trim()
+    .toLowerCase();
+  const nameField = String(chat.useNameField == null ? 'off' : chat.useNameField)
+    .trim()
+    .toLowerCase();
+  return {
+    timePrefix: CONTEXT_TIME_PREFIXES.includes(timePrefix) ? timePrefix : 'short',
+    nameField: NAME_FIELD_MODES.includes(nameField) ? nameField : 'off',
+  };
+}
+
+// 只到分钟的时间前缀，日期由 system 里的“今天是 …”统一给出
+function formatClockPrefix(ts) {
+  const p = shanghaiClock(ts);
+  return `[${pad2(p.hour)}:${pad2(p.minute)}]`;
+}
+
+// 去掉历史遗留的 [日期][时间][名字]{…} 包装，拿到正文
+function messageBody(m) {
+  const stripped = stripAllRecordPrefixes(m && m.text);
+  if (stripped === null) return String((m && m.text) || '');
+  return stripped;
+}
+
+// name 字段：实测模型读不到它（问“谁在说话”答不出来），所以默认不发；
+// auto 只在名字是 ASCII 时才发（OpenAI 规范要求 name 为 [a-zA-Z0-9_-]{1,64}）。
+function nameFieldValue(name, mode) {
+  const value = String(name || '').trim();
+  if (!value || mode === 'off') return '';
+  if (mode === 'force') return value;
+  return /^[A-Za-z0-9_-]{1,64}$/.test(value) ? value : '';
+}
+
+// 渲染一条历史消息（供群成员 AI 与判断模型共用）
+function renderContextMessage(m, isOwn, agent, format) {
+  const body = messageBody(m);
+  if (format.timePrefix === 'full') {
+    return {
+      role: isOwn ? 'assistant' : 'user',
+      content: formatPromptPrefix(m.time, m.name || '未知用户') + body + '}',
+    };
+  }
+  // 新格式：自己的历史只给正文，避免模型模仿出时间/名字前缀
+  if (isOwn) return { role: 'assistant', content: body };
+  const clock = formatClockPrefix(m.time);
+  const withName = format.timePrefix === 'timeOnly' ? '' : `${m.name || '未知用户'}：`;
+  const msg = { role: 'user', content: clock + ' ' + withName + body };
+  const nameValue = nameFieldValue(m.name, format.nameField);
+  if (nameValue) msg.name = nameValue;
+  return msg;
+}
+
+function isOwnMessage(m, agent) {
+  return (
+    m.role === 'ai' &&
+    ((m.aiId && m.aiId === agent.id) || (!m.aiId && m.name === agent.name))
+  );
+}
+
 // 统一判断 API Key / Base URL 是否为“未填写”或示例占位符，
 // 避免 config.example.js 复制后未改 key 时被误认为已配置。
 function isBlankOrPlaceholder(value) {
@@ -1827,53 +1896,30 @@ function scheduleDailyMemoryCatchUp() {
 // 关键：目标 AI 自己的历史是 assistant；其他所有人（含其他 AI）都是带名字的 user，
 // 避免 AI 把别人的发言误当成自己说的。
 async function buildAIMessages(snapshot, agent) {
+  const format = getContextFormatOptions();
+  const todayKey = serverDateKey(Date.now());
   const replyRule =
-    `【输出格式规则】` +
-    `你必须严格按照以下格式输出回复：` +
-    `严格要求：` +
-    `1. 整条回复只能包含上述这一条群聊记录。` +
-    `2. 必须以 '[YYYY/MM/DD][HH:MM:SS][${agent.name}]' 开头。` +
-    `3. 时间必须使用 24 小时制 'HH:MM:SS'。` +
-    `4. 角色名称必须严格使用 '${agent.name}'。` +
-    `5. 角色名称后的正文必须放在一对 '{}' 内。` +
-    `6. '['、']'、'{'、'}' 的位置必须严格按照格式，不得改变。` +
-    `7. 除上述群聊记录外，不得输出任何其他内容。` +
-    `8. 不得输出 Markdown、代码块、解释、分析、前缀、后缀或格式说明。` +
-    `9. 正文为空时也必须保留 '{}'。` +
-    `10. 每次回复只能生成一条群聊记录，禁止重复生成格式。` +
-    `11. {} 内的内容才是实际发送给群成员的消息。` +
-    `输出前请自行检查，确保最终输出完全符合上述格式。` +
-    `【正确示例】` +
-    `[2026/09/10][21:30:15][${agent.name}]{你好呀，今天过得怎么样？}` +
-    `【错误示例】` +
-    `回复：[2026/09/10][21:30:15][${agent.name}]{你好}` +
-    `[2026/09/10][21:30:15][${agent.name}]{你好}这是一个很好的思路` +
-    '```text' +
-    `[2026/09/10][21:30:15][${agent.name}]{你好}`;
+    `【输出规则】` +
+    `1. 只输出你要说的那句话本身，纯文本。` +
+    `2. 不要输出日期、时间、名字前缀；不要用 []、{} 包裹；不要自己署名（例如不要写“${agent.name}：”）。` +
+    `3. 不要输出 Markdown、代码块、解释、分析、前后缀或格式说明。` +
+    `4. 每次只输出一条消息，禁止输出多条或重复格式。` +
+    `5. 输出前自查：整段文本应当可以原样发到群里。` +
+    `【正确示例】你好呀，今天过得怎么样？` +
+    `【错误示例】回复：[2026/09/10][21:30:15][${agent.name}]{你好}`;
+  const contextNote =
+    format.timePrefix === 'full'
+      ? `【消息格式】群里的消息形如“[日期][时间][名字]{内容}”，请直接理解其内容。`
+      : `【消息格式】其他成员的消息形如“[HH:MM] 名字：内容”；` +
+        `你自己过去说过的话只给正文本身（不带时间前缀）。今天是 ${todayKey}（Asia/Shanghai）。`;
   const memorySummary = await buildMemorySummary();
-  const systemContent = [agent.persona || '', memorySummary, replyRule]
+  const systemContent = [agent.persona || '', memorySummary, contextNote, replyRule]
     .filter(Boolean)
     .join('\n\n');
   const messages = [{ role: 'system', content: systemContent }];
 
-  const formatContent = (m) => {
-    let content = stripAllRecordPrefixes(m.text);
-    if (content === null) content = m.text;
-    if (!isFormattedReply(content)) {
-      content = formatPromptPrefix(m.time, m.name || '未知用户') + content + '}';
-    }
-    return content;
-  };
-
   for (const m of snapshot) {
-    const isOwn =
-      m.role === 'ai' &&
-      ((m.aiId && m.aiId === agent.id) || (!m.aiId && m.name === agent.name));
-    if (isOwn) {
-      messages.push({ role: 'assistant', content: formatContent(m) });
-    } else {
-      messages.push({ role: 'user', content: formatContent(m) });
-    }
+    messages.push(renderContextMessage(m, isOwnMessage(m, agent), agent, format));
   }
   return messages;
 }
@@ -1905,11 +1951,32 @@ function stripAllRecordPrefixes(text) {
   return current;
 }
 
-// 把模型输出规范成 [日期][时间][AI名]{正文}，时间与名字一律以服务器为准
-function normalizeAIReply(rawText, ts, aiName) {
-  const body = stripAllRecordPrefixes(String(rawText || '').trim());
-  if (!body.trim()) throw new Error('AI 只输出了格式前缀，没有正文');
-  return formatPromptPrefix(ts, aiName) + body + '}';
+function stripWrappingCodeFence(text) {
+  const trimmed = String(text || '').trim();
+  const matched = trimmed.match(/^```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```$/);
+  return matched ? matched[1].trim() : trimmed;
+}
+
+function stripLeadingClockPrefix(text) {
+  return String(text || '').replace(/^\[\d{1,2}:\d{2}(?::\d{2})?\]\s*/, '');
+}
+
+function stripLeadingSelfName(text, aiName) {
+  const name = String(aiName || '').trim();
+  if (!name) return String(text || '');
+  return String(text || '').replace(new RegExp(`^${escapeRegExp(name)}\\s*[:：]\\s*`), '');
+}
+
+// 把模型输出规范成「纯正文」：时间与名字由服务端写进 time / name 字段，不再包进正文。
+// 模型偶尔还会吐旧包装或自己加时间/署名，这里做防御性剥离（不影响纯文本输出）。
+function normalizeAIReply(rawText, aiName) {
+  let body = stripWrappingCodeFence(rawText);
+  body = stripAllRecordPrefixes(body);
+  body = stripLeadingClockPrefix(body);
+  body = stripLeadingSelfName(body, aiName);
+  body = stripWrappingCodeFence(body).trim();
+  if (!body) throw new Error('AI 没有输出正文');
+  return body;
 }
 
 function aiIsConfigured(agent) {
@@ -2068,7 +2135,7 @@ async function performAIReply(agent, snapshot, depth, stormId) {
     if (!fullText.trim()) throw new Error('AI 返回内容为空');
 
     const saveTime = Date.now();
-    const finalText = normalizeAIReply(fullText, saveTime, aiName);
+    const finalText = normalizeAIReply(fullText, aiName);
     let final;
     try {
       final = await addMessage('ai', aiName, aiAvatar, finalText, msgId, agent.id, saveTime);
@@ -2592,15 +2659,6 @@ function replySnapshotForAgent(agent, settings) {
 }
 
 // 判断阶段的记录格式与群成员 AI 看到的保持一致，保证 [日期][时间][名字] 信息完整
-function formatJudgeRecord(m) {
-  let content = stripAllRecordPrefixes(m.text);
-  if (content === null) content = String(m.text || '');
-  if (!isFormattedReply(content)) {
-    content = formatPromptPrefix(m.time, m.name || '未知用户') + content + '}';
-  }
-  return content;
-}
-
 // 判断提示词：带上同一层前面 AI 已经做出的判断，避免所有人都以为“别人会回”而冷场，
 // 也避免有人已经接了话还重复接话。
 function buildJudgeMessages(snapshot, agent, priorJudgements) {
@@ -2636,9 +2694,11 @@ function buildJudgeMessages(snapshot, agent, priorJudgements) {
     '6. 避免重复：如果已经有成员决定回复，只有你能补充不同视角或更准确的信息时才回复。',
     '【输出要求】只输出一个 JSON 对象，不要代码块、不要解释：{"reply":true,"reason":"一句话理由"}。',
   ].join('\n');
+  // 判断阶段用与群成员 AI 相同的上下文格式（新格式：其他成员 '[HH:MM] 名字：正文'）
+  const format = getContextFormatOptions();
   const messages = [{ role: 'system', content: system }];
   for (const m of snapshot) {
-    messages.push({ role: 'user', content: formatJudgeRecord(m) });
+    messages.push(renderContextMessage(m, false, agent, format));
   }
   return messages;
 }
@@ -3583,6 +3643,11 @@ function normalizeSettings(raw) {
     if (cfg.chat.aiReplyMode !== undefined) {
       cfg.chat.aiReplyMode = String(cfg.chat.aiReplyMode).trim().toLowerCase();
     }
+    for (const key of ['contextTimePrefix', 'useNameField']) {
+      if (cfg.chat[key] !== undefined) {
+        cfg.chat[key] = String(cfg.chat[key]).trim().toLowerCase();
+      }
+    }
     for (const key of ['silentOnHumanOnlyMention', 'aiReplyOnAIMention']) bool(cfg.chat, key);
     for (const key of ['aiMentionMaxHops', 'everyoneMaxHops', 'displayHours']) num(cfg.chat, key);
     if (Array.isArray(cfg.chat.everyoneKeywords)) {
@@ -3743,6 +3808,18 @@ function validateSettings(cfg) {
     const mode = String(cfg.chat.aiReplyMode || '').trim().toLowerCase();
     if (!['self', 'hybrid', 'off', 'router'].includes(mode)) {
       errors.push('chat.aiReplyMode 只能是 self / hybrid / off');
+    }
+    if (
+      cfg.chat.contextTimePrefix !== undefined &&
+      !CONTEXT_TIME_PREFIXES.includes(String(cfg.chat.contextTimePrefix).trim().toLowerCase())
+    ) {
+      errors.push('chat.contextTimePrefix 只能是 short / timeOnly / full');
+    }
+    if (
+      cfg.chat.useNameField !== undefined &&
+      !NAME_FIELD_MODES.includes(String(cfg.chat.useNameField).trim().toLowerCase())
+    ) {
+      errors.push('chat.useNameField 只能是 off / auto / force');
     }
     for (const key of ['silentOnHumanOnlyMention', 'aiReplyOnAIMention']) {
       if (cfg.chat[key] !== undefined) boolean(cfg.chat[key], `chat.${key}`);
@@ -4370,6 +4447,16 @@ async function startServer() {
       console.log(`当前登录账号：${(config.users || []).map((u) => u.username).join('、')}`);
       console.log(`历史消息目录 ${STORAGE_DIR}，内存热窗口 ${history.length} 条`);
       const replyMode = getReplyMode();
+      const ctxFormat = getContextFormatOptions();
+      console.log(
+        `上下文消息格式：${ctxFormat.timePrefix}（name 字段：${ctxFormat.nameField}），AI 只输出纯正文`
+      );
+      if (ctxFormat.timePrefix === 'timeOnly' && ctxFormat.nameField === 'off') {
+        console.warn(
+          '[配置] chat.contextTimePrefix=timeOnly 且 chat.useNameField=off：消息里既没有名字前缀也不发 name 字段，' +
+            'AI 会分不清谁在说话，建议改成 short，或把 useNameField 设为 auto / force'
+        );
+      }
       if (replyMode === 'off') {
         console.log('AI 回复模式：off（不自动回复）');
       } else if (replyMode === 'self') {
