@@ -212,6 +212,15 @@ const MEMORY_FIELDS = [
   { path: 'memory.timeoutMs', label: '超时（毫秒）', type: 'number', min: 1000 },
   { path: 'memory.maxInputChars', label: '单次输入字符上限', type: 'number', min: 1000 },
   {
+    path: 'memory.budgetHeadroom',
+    label: '输出预算上浮',
+    type: 'number',
+    step: '0.05',
+    min: 0,
+    max: 2,
+    hint: '实际 max_tokens = 各层预算 × (1+上浮)；默认 0.5（多给 50%，实测月压缩需要），0 = 不预留',
+  },
+  {
     path: 'memory.pendingKeywords',
     label: '待办关键词兜底',
     type: 'stringList',

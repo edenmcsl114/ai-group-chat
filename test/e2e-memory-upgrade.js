@@ -127,7 +127,7 @@ function startMockAI() {
         const userContent = String((body.messages[1] && body.messages[1].content) || '');
         let content = '收到';
         if (system.includes('记忆压缩助手')) {
-          memoryRequests.push({ system, userContent });
+          memoryRequests.push({ system, userContent, maxTokens: body.max_tokens });
           content = memoryReply();
         } else {
           aiRequests.push({ system, messages: body.messages });
@@ -329,6 +329,13 @@ async function scenarioProfile() {
   );
   ok('profiles 归一化落盘（数组裁剪 8 项，字段保留）');
 
+  // 预算上浮：日预算 2000 + 默认 0.5 → max_tokens = 3000
+  assert(
+    memoryRequests.length > 0 && memoryRequests.every((r) => r.maxTokens === 3000),
+    `日压缩 max_tokens 应为 3000（实际 ${memoryRequests.map((r) => r.maxTokens).join(',')}）`
+  );
+  ok('输出预算按 budgetHeadroom 上浮（2000 → 3000）');
+
   const cookie = await login();
   await request('POST', '/api/messages', { text: '早上好' }, cookie);
   await waitFor(() => aiRequests.length >= 1, 20000, '等待 AI 回复请求');
@@ -350,6 +357,12 @@ async function checkPending(extraMemory, expectation) {
   startApp();
   await waitForApp();
   await waitFor(() => fs.existsSync(dailyPath()), 20000, '等待日压缩落盘');
+  assert(
+    memoryRequests.every((r) => r.maxTokens === expectation.maxTokens),
+    `budgetHeadroom=${extraMemory.budgetHeadroom} 时 max_tokens 应为 ${expectation.maxTokens}（实际 ${memoryRequests
+      .map((r) => r.maxTokens)
+      .join(',')}）`
+  );
   const entries = readDaily().entries;
   const found = (keyword) => entries.find((e) => String(e.content).includes(keyword));
   const agreed = found('答应');
@@ -368,10 +381,13 @@ async function checkPending(extraMemory, expectation) {
 async function scenarioPending() {
   console.log('\n[2/3] pending 关键词兜底');
   mode = 'pending';
-  await checkPending({}, { agreedStatus: 'pending', agreedImportance: 3 });
-  ok('默认配置：命中「答应 / 说好了」→ pending + importance=3，已完成的保持不变');
-  await checkPending({ pendingKeywords: [] }, { agreedStatus: 'active', agreedImportance: 2 });
-  ok('pendingKeywords 配成空数组 → 关闭兜底');
+  await checkPending({}, { agreedStatus: 'pending', agreedImportance: 3, maxTokens: 3000 });
+  ok('默认配置：命中「答应 / 说好了」→ pending + importance=3，已完成的保持不变，预算上浮 50%');
+  await checkPending(
+    { pendingKeywords: [], budgetHeadroom: 0 },
+    { agreedStatus: 'active', agreedImportance: 2, maxTokens: 2000 }
+  );
+  ok('pendingKeywords 配成空数组 → 关闭兜底；budgetHeadroom=0 → 不预留（max_tokens=预算）');
 }
 
 async function scenarioPin() {

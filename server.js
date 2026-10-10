@@ -821,6 +821,14 @@ function getMemorySettings() {
     maxInputChars: Math.max(1, Number(raw.maxInputChars) || 60000),
     backfillOnStartup: raw.backfillOnStartup !== false,
     budgets,
+    // 输出预算上浮：实际 max_tokens = 每片预算 × (1 + budgetHeadroom)，
+    // 预算本身仍是提示词里的目标值，上浮只作为「别被硬截断」的余量。0 = 不预留。
+    // 实测 deepseek-chat 写一个月的记忆约需 7–8k tokens，默认给 50% 余量。
+    budgetHeadroom: (() => {
+      const n = Number(raw.budgetHeadroom);
+      if (!Number.isFinite(n) || n < 0) return 0.5;
+      return Math.min(2, n);
+    })(),
   });
 }
 
@@ -1794,7 +1802,13 @@ async function requestMemoryCompression(settings, level, content, budget, isUpRo
     temperature: Number.isFinite(Number(settings.temperature))
       ? Number(settings.temperature)
       : 0.2,
-    max_tokens: Math.max(1, Math.min(budget, Number(settings.maxTokens) || 8192)),
+    max_tokens: Math.max(
+      1,
+      Math.min(
+        Math.ceil(Number(budget) * (1 + Number(settings.budgetHeadroom) || 0)),
+        Number(settings.maxTokens) || 8192
+      )
+    ),
   };
   const thinking = settings.thinking || {};
   if (
@@ -4248,7 +4262,9 @@ function normalizeSettings(raw) {
 
   if (isPlainObject(cfg.memory)) {
     for (const key of ['enabled', 'debug', 'backfillOnStartup']) bool(cfg.memory, key);
-    for (const key of ['temperature', 'maxTokens', 'timeoutMs', 'maxInputChars']) num(cfg.memory, key);
+    for (const key of ['temperature', 'maxTokens', 'timeoutMs', 'maxInputChars', 'budgetHeadroom']) {
+      num(cfg.memory, key);
+    }
     for (const key of ['apiBaseUrl', 'model', 'apiKey', 'storageDir']) str(cfg.memory, key);
     normalizeThinking(cfg.memory.thinking);
     if (isPlainObject(cfg.memory.budgets)) {
@@ -4442,6 +4458,9 @@ function validateSettings(cfg) {
     }
     for (const key of ['temperature', 'maxTokens', 'timeoutMs', 'maxInputChars']) {
       if (cfg.memory[key] !== undefined) numeric(cfg.memory[key], `memory.${key}`, { min: 0 });
+    }
+    if (cfg.memory.budgetHeadroom !== undefined) {
+      numeric(cfg.memory.budgetHeadroom, 'memory.budgetHeadroom', { min: 0, max: 2 });
     }
     if (isPlainObject(cfg.memory.budgets)) {
       for (const key of ['daily', 'weekly', 'monthly', 'quarter', 'year']) {
