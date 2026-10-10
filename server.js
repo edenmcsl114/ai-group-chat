@@ -727,6 +727,22 @@ function isUsableBaseUrl(value) {
 const MEMORY_LEVEL_ORDER = ['daily', 'weekly', 'monthly', 'quarter', 'year'];
 const MEMORY_CATEGORIES = ['事实', '事件', '偏好', '计划', '情绪/状态', '临时信息', '无意义闲聊'];
 const MEMORY_DROP_CATEGORY = '无意义闲聊';
+// 条目状态与重要度：importance=3 表示「任何层级都只能合并、不能删除」
+const MEMORY_STATUSES = ['active', 'pending', 'done', 'expired'];
+const MEMORY_PROFILE_LIST_FIELDS = ['aliases', 'relations', 'preferences', 'ongoing', 'pending', 'resolved'];
+// 关键词兜底：内容命中这些词时强制标记为 pending + importance=3（可在 config 里改，空数组=关闭）
+const MEMORY_DEFAULT_PENDING_KEYWORDS = [
+  '答应',
+  '约定',
+  '说好',
+  '别忘',
+  '待定',
+  '改天',
+  '下次',
+  '记得',
+  '欠',
+  '请客',
+];
 let memoryChain = Promise.resolve(); // 串行执行跨天压缩，避免并发写同一批文件
 
 // ---------------- 记忆任务运行记录 ----------------
@@ -1005,6 +1021,203 @@ async function deleteMemoryFile(level, key) {
   await fs.promises.rm(memoryFilePath(level, key), { force: true });
 }
 
+// ---------------- 置顶记忆 + 成员档案 ----------------
+const MEMORY_PINS_FILE = path.join(MEMORY_DIR, '_pins.json');
+let memoryPinsCache = null;
+
+function normalizeMemoryPin(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const content = trimText(raw.content, 200);
+  if (!content) return null;
+  return {
+    member: trimText(raw.member, 24),
+    topic: trimText(raw.topic, 24),
+    content,
+    createdAt: Number.isFinite(Number(raw.createdAt)) ? Number(raw.createdAt) : Date.now(),
+    source: trimText(raw.source, 60),
+  };
+}
+
+async function readMemoryPins() {
+  if (memoryPinsCache) return memoryPinsCache;
+  try {
+    const obj = JSON.parse(await fs.promises.readFile(MEMORY_PINS_FILE, 'utf8'));
+    memoryPinsCache = Array.isArray(obj && obj.entries)
+      ? obj.entries.map(normalizeMemoryPin).filter(Boolean)
+      : [];
+  } catch (_err) {
+    memoryPinsCache = [];
+  }
+  return memoryPinsCache;
+}
+
+async function writeMemoryPins(entries) {
+  const list = (Array.isArray(entries) ? entries : []).map(normalizeMemoryPin).filter(Boolean);
+  await fs.promises.mkdir(MEMORY_DIR, { recursive: true });
+  const tmp = `${MEMORY_PINS_FILE}.tmp`;
+  await fs.promises.writeFile(
+    tmp,
+    JSON.stringify({ version: 1, updatedAt: Date.now(), entries: list }, null, 2),
+    'utf8'
+  );
+  await fs.promises.rename(tmp, MEMORY_PINS_FILE);
+  memoryPinsCache = list;
+  return list;
+}
+
+// 扫描所有层级的记忆文件，按成员取 updatedAt 最新的一份档案
+async function collectMemoryProfiles() {
+  const byMember = new Map();
+  for (const level of MEMORY_LEVEL_ORDER) {
+    let names = [];
+    try {
+      names = (await fs.promises.readdir(path.join(MEMORY_DIR, level))).filter((n) =>
+        n.endsWith('.json')
+      );
+    } catch (_err) {
+      continue;
+    }
+    for (const name of names) {
+      const file = await readMemoryFile(level, name.replace(/\.json$/, ''));
+      if (!file || !Array.isArray(file.profiles)) continue;
+      for (const raw of file.profiles) {
+        const profile = normalizeMemoryProfile(raw);
+        if (!profile) continue;
+        const prev = byMember.get(profile.member);
+        if (!prev || Number(profile.updatedAt || 0) >= Number(prev.updatedAt || 0)) {
+          byMember.set(profile.member, profile);
+        }
+      }
+    }
+  }
+  return Array.from(byMember.values()).sort((a, b) => a.member.localeCompare(b.member, 'zh'));
+}
+
+function formatProfileBlock(profiles) {
+  if (!profiles.length) return '';
+  const lines = profiles.map((p) => {
+    const bits = [];
+    if (p.identity) bits.push(p.identity);
+    if (p.aliases.length) bits.push(`别名 ${p.aliases.join('、')}`);
+    if (p.relations.length) bits.push(`关系 ${p.relations.join('；')}`);
+    if (p.preferences.length) bits.push(`偏好 ${p.preferences.join('；')}`);
+    if (p.ongoing.length) bits.push(`进行中 ${p.ongoing.join('；')}`);
+    bits.push(`待办 ${p.pending.length ? p.pending.join('；') : '无'}`);
+    if (p.resolved.length) bits.push(`已了结 ${p.resolved.join('；')}`);
+    if (p.notes) bits.push(p.notes);
+    return `${p.member}：${bits.join('；')}`;
+  });
+  return `【成员档案】\n${lines.join('\n')}`;
+}
+
+function formatPinBlock(pins) {
+  if (!pins.length) return '';
+  const lines = pins.map(
+    (p) => `- ${p.member ? `[${p.member}]` : ''}${p.topic ? `[${p.topic}]` : ''} ${p.content}`
+  );
+  return `【置顶记忆】\n${lines.join('\n')}`;
+}
+
+// 压缩时给模型的「已有成员档案 + 置顶记忆」上下文
+async function buildMemoryPromptContext() {
+  const [profiles, pins] = await Promise.all([collectMemoryProfiles(), readMemoryPins()]);
+  return [formatProfileBlock(profiles), formatPinBlock(pins)].filter(Boolean).join('\n\n');
+}
+
+// ---------------- 记忆管理（设置页） ----------------
+function isValidMemoryLevelKey(level, key) {
+  if (!MEMORY_LEVEL_ORDER.includes(level)) return false;
+  const value = String(key || '').trim();
+  if (level === 'daily' || level === 'weekly') return /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (level === 'monthly') return /^\d{4}-\d{2}$/.test(value);
+  if (level === 'quarter') return /^\d{4}-Q[1-4]$/.test(value);
+  return /^\d{4}$/.test(value);
+}
+
+async function listMemoryFiles(level) {
+  let names = [];
+  try {
+    names = (await fs.promises.readdir(path.join(MEMORY_DIR, level))).filter((n) =>
+      n.endsWith('.json')
+    );
+  } catch (_err) {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    const key = name.replace(/\.json$/, '');
+    if (!isValidMemoryLevelKey(level, key)) continue;
+    const file = await readMemoryFile(level, key);
+    if (!file) continue;
+    out.push({
+      key,
+      entries: Array.isArray(file.entries) ? file.entries.length : 0,
+      profiles: Array.isArray(file.profiles) ? file.profiles.length : 0,
+      createdAt: Number(file.createdAt || 0),
+    });
+  }
+  return out.sort((a, b) => (a.key < b.key ? 1 : -1));
+}
+
+async function buildMemoryOverview() {
+  const levels = {};
+  for (const level of MEMORY_LEVEL_ORDER) levels[level] = await listMemoryFiles(level);
+  const [pins, profiles] = await Promise.all([readMemoryPins(), collectMemoryProfiles()]);
+  return { levels, pins, profiles };
+}
+
+// 改记忆文件前先备份，最多保留 20 份
+async function backupMemoryFile(level, key) {
+  const file = memoryFilePath(level, key);
+  try {
+    await fs.promises.access(file);
+  } catch (_err) {
+    return null;
+  }
+  const dir = path.join(MEMORY_DIR, '_backups');
+  await fs.promises.mkdir(dir, { recursive: true });
+  const dest = path.join(dir, `${level}-${key}-${Date.now()}.json`);
+  await fs.promises.copyFile(file, dest);
+  const names = (await fs.promises.readdir(dir)).filter((n) => n.endsWith('.json')).sort();
+  while (names.length > 20) {
+    const name = names.shift();
+    await fs.promises.rm(path.join(dir, name), { force: true });
+  }
+  return path.basename(dest);
+}
+
+// 修改单条记忆的状态/重要度（不提供物理删除，只支持标为 expired）
+async function patchMemoryEntry({ level, key, member, topic, content, status, importance }) {
+  if (!isValidMemoryLevelKey(level, key)) throw new Error('层级或日期不合法');
+  const file = await readMemoryFile(level, key);
+  if (!file || !Array.isArray(file.entries)) throw new Error('记忆文件不存在');
+  const index = file.entries.findIndex(
+    (entry) =>
+      String(entry.member || '') === String(member || '') &&
+      String(entry.content || '') === String(content || '') &&
+      (topic === undefined || String(entry.topic || '') === String(topic || ''))
+  );
+  if (index === -1) throw new Error('找不到这条记忆（可能已被重新压缩）');
+
+  const before = file.entries[index];
+  const after = Object.assign({}, before);
+  if (status !== undefined) {
+    const next = String(status || '').trim().toLowerCase();
+    if (!MEMORY_STATUSES.includes(next)) {
+      throw new Error('status 只能是 active / pending / done / expired');
+    }
+    after.status = next;
+  }
+  if (importance !== undefined) after.importance = normalizeImportance(importance);
+
+  file.entries[index] = after;
+  file.version = 2;
+  file.updatedAt = Date.now();
+  const backup = await backupMemoryFile(level, key);
+  await writeMemoryFile(level, key, file);
+  return { before, after, backup };
+}
+
 function formatMessageForMemory(m) {
   let content = stripAllRecordPrefixes(m.text);
   if (content === null) content = String(m.text || '');
@@ -1116,13 +1329,13 @@ function dedupeMemoryEntries(entries) {
   const result = [];
 
   for (const entry of entries) {
-    const key = `${entry.category}|${entry.member}|${entry.content}`;
+    const key = `${entry.topic || entry.category}|${entry.member}|${entry.content}`;
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(entry);
   }
 
-  return result;
+  return resolveTopicConflicts(result);
 }
 
 function normalizeMemoryCategory(value) {
@@ -1130,6 +1343,159 @@ function normalizeMemoryCategory(value) {
   if (!v) return '事实';
   const hit = MEMORY_CATEGORIES.find((c) => c === v || c.includes(v) || v.includes(c));
   return hit || '事实';
+}
+
+function normalizeImportance(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 2; // 默认「较重要」，宁可多留
+  return Math.min(3, Math.max(1, Math.round(n)));
+}
+
+function normalizeMemoryStatus(value) {
+  const raw = String(value == null ? '' : value).trim();
+  const lower = raw.toLowerCase();
+  if (MEMORY_STATUSES.includes(lower)) return lower;
+  if (/pending|待办|未完成|进行中|待定|未定/.test(raw)) return 'pending';
+  if (/done|完成|已办|已解决|已结束|已举行/.test(raw)) return 'done';
+  if (/expired|过期|失效|已废弃|已取消/.test(raw)) return 'expired';
+  return 'active';
+}
+
+function getPendingKeywords() {
+  const raw = config.memory && config.memory.pendingKeywords;
+  if (!Array.isArray(raw)) return MEMORY_DEFAULT_PENDING_KEYWORDS.slice();
+  return raw
+    .map((item) => String(item == null ? '' : item).trim())
+    .filter(Boolean)
+    .slice(0, 40);
+}
+
+// 关键词兜底：模型没标 pending 时，靠这些词把「未完成的约定」捞回来
+function applyPendingKeywordFallback(entry) {
+  if (!entry || entry.status === 'done' || entry.status === 'expired') return entry;
+  const keywords = getPendingKeywords();
+  if (keywords.length === 0) return entry;
+  if (!keywords.some((keyword) => entry.content.includes(keyword))) return entry;
+  return Object.assign({}, entry, { status: 'pending', importance: 3 });
+}
+
+function trimText(value, limit) {
+  const text = String(value == null ? '' : value).trim();
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
+function normalizeStringList(value, max, limit) {
+  const list = Array.isArray(value) ? value : value == null ? [] : [value];
+  const out = [];
+  const seen = new Set();
+  for (const item of list) {
+    const text = trimText(item, limit);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+// 成员档案：每个成员一份「当前状态快照」
+function normalizeMemoryProfile(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const member = trimText(raw.member == null ? raw.name : raw.member, 24);
+  if (!member) return null;
+  const profile = {
+    member,
+    updatedAt: Number.isFinite(Number(raw.updatedAt)) ? Number(raw.updatedAt) : Date.now(),
+    identity: trimText(raw.identity, 120),
+    notes: trimText(raw.notes, 200),
+  };
+  for (const field of MEMORY_PROFILE_LIST_FIELDS) {
+    profile[field] = normalizeStringList(raw[field], 8, 40);
+  }
+  const hasContent =
+    profile.identity ||
+    profile.notes ||
+    MEMORY_PROFILE_LIST_FIELDS.some((field) => profile[field].length > 0);
+  return hasContent ? profile : null;
+}
+
+// 同一 topic 出现「未完成 / 已完成」冲突时，只保留更新的那条
+// 合并新旧成员档案：新的一侧覆盖同一成员
+function mergeMemoryProfiles(previous, incoming) {
+  const byMember = new Map();
+  for (const raw of Array.isArray(previous) ? previous : []) {
+    const profile = normalizeMemoryProfile(raw);
+    if (profile) byMember.set(profile.member, profile);
+  }
+  for (const raw of Array.isArray(incoming) ? incoming : []) {
+    const profile = normalizeMemoryProfile(raw);
+    if (profile) byMember.set(profile.member, profile);
+  }
+  return Array.from(byMember.values());
+}
+
+function resolveTopicConflicts(entries) {
+  const groups = new Map();
+  for (const entry of entries) {
+    if (!entry.topic) continue;
+    const key = `${entry.member}|${entry.topic}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  const drop = new Set();
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    const isClosed = (entry) => entry.status === 'done' || entry.status === 'expired';
+    const closed = list.filter(isClosed);
+    const open = list.filter((entry) => !isClosed(entry));
+    if (closed.length === 0 || open.length === 0) continue;
+    const newest = list.reduce((a, b) => (String(a.time || '') >= String(b.time || '') ? a : b));
+    for (const loser of isClosed(newest) ? open : closed) drop.add(loser);
+  }
+  return entries.filter((entry) => !drop.has(entry));
+}
+
+// 模型有时会在 JSON 前后带解释文字或只剩半段代码块，这里抽出「第一个括号配对完整的对象」
+// 模型偶尔会写出 `"importance":2"` 这类笔误（数字后多一个引号），或留下多余逗号，
+// 这些都会让整段 JSON 报废，这里做两处安全的机械修复。
+function repairMemoryJson(text) {
+  return String(text || '')
+    .replace(/:(\s*)(-?\d+(?:\.\d+)?)"(\s*[,}\]])/g, ':$1$2$3')
+    .replace(/,\s*([}\]])/g, '$1');
+}
+
+function extractJsonObject(text) {
+  const src = String(text || '');
+  const start = src.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < src.length; i += 1) {
+    const ch = src[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(src.slice(start, i + 1));
+        } catch (_err) {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 // 模型输出撞到 max_tokens 时会断在任意位置。这里按括号深度扫描文本，
@@ -1172,6 +1538,59 @@ function salvageJsonObjects(text) {
   return objects;
 }
 
+// 整体 JSON 不合法时按 key 分段抢救：即使 "entries" 段写坏了，"profiles" 段仍能取回来
+function salvageSectionObjects(text, key) {
+  const src = String(text || '');
+  const at = src.indexOf(`"${key}"`);
+  if (at === -1) return [];
+  return salvageJsonObjects(src.slice(at + key.length));
+}
+
+// 固定输出格式是 JSONL（一行一个对象）：逐行解析，单行坏掉不影响其它行
+function parseMemoryLineObjects(text) {
+  const entries = [];
+  const profiles = [];
+  let skipped = 0;
+  for (const rawLine of String(text || '').split('\n')) {
+    const line = rawLine.trim().replace(/^```[a-zA-Z0-9_-]*$/, '').replace(/,$/, '');
+    if (!line.startsWith('{') || !line.endsWith('}')) continue;
+    let obj = null;
+    try {
+      obj = JSON.parse(line);
+    } catch (_err) {
+      try {
+        obj = JSON.parse(repairMemoryJson(line));
+      } catch (_err2) {
+        obj = null;
+      }
+    }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+      skipped += 1;
+      continue;
+    }
+    if (obj.entries !== undefined || obj.profiles !== undefined) continue; // 嵌套结构交给原路径
+    if (obj.category !== undefined || obj.content !== undefined) entries.push(obj);
+    else if (obj.member !== undefined || obj.name !== undefined) profiles.push(obj);
+  }
+  return { entries, profiles, skipped };
+}
+
+// 把「解析失败」的原文留一份，便于排查模型输出格式问题（只保留最近一次）
+async function dumpBadMemoryOutput(level, key, finishReason, content) {
+  try {
+    await fs.promises.mkdir(MEMORY_DIR, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(MEMORY_DIR, '_last-bad-output.txt'),
+      `level=${level} key=${key} finish_reason=${finishReason || '?'} at=${new Date().toISOString()}\n\n${String(
+        content || ''
+      )}`,
+      'utf8'
+    );
+  } catch (_err) {
+    /* ignore */
+  }
+}
+
 function parseMemoryEntries(rawReply, fallbackMember, fallbackTime) {
   const cleaned = String(rawReply || '')
     .trim()
@@ -1179,10 +1598,19 @@ function parseMemoryEntries(rawReply, fallbackMember, fallbackTime) {
     .replace(/```\s*$/, '')
     .trim();
   let value = null;
+  let repaired = false;
   try {
     value = JSON.parse(cleaned);
   } catch (_err) {
-    value = null;
+    // 先做机械修复（多余引号 / 尾随逗号），再抽「配对完整的对象」
+    const fixed = repairMemoryJson(cleaned);
+    try {
+      value = JSON.parse(fixed);
+      repaired = true;
+    } catch (_err2) {
+      value = extractJsonObject(fixed);
+      repaired = value !== null;
+    }
   }
   const valid =
     value !== null &&
@@ -1191,6 +1619,9 @@ function parseMemoryEntries(rawReply, fallbackMember, fallbackTime) {
       Array.isArray(value.entries) ||
       Array.isArray(value.items) ||
       Array.isArray(value.list));
+  // 固定输出格式是 JSONL（一行一个对象），先按行解析
+  const lineObjects = parseMemoryLineObjects(cleaned);
+
   const rawItems = [];
   const collect = (v) => {
     if (Array.isArray(v)) {
@@ -1222,21 +1653,65 @@ function parseMemoryEntries(rawReply, fallbackMember, fallbackTime) {
     if (category === MEMORY_DROP_CATEGORY) return;
     const member = String(item.member == null ? fallbackMember || '' : item.member).trim();
     const time = String(item.time == null ? fallbackTime || '' : item.time).trim();
-    const dedupeKey = `${category}|${member}|${time}|${content}`;
+    const topic = String(item.topic == null ? '' : item.topic).trim().slice(0, 24);
+    const normalized = applyPendingKeywordFallback({
+      category,
+      member,
+      time,
+      topic,
+      importance: normalizeImportance(item.importance),
+      status: normalizeMemoryStatus(item.status),
+      content,
+    });
+    const dedupeKey = `${normalized.topic || normalized.category}|${member}|${content}`;
     if (seen.has(dedupeKey)) return;
     seen.add(dedupeKey);
-    entries.push({ category, member, time, content });
+    entries.push(normalized);
   };
   for (const item of rawItems) pushItem(item);
-
-  // JSON 解析失败（多半是被截断）时，抢救出完整的条目
-  let truncated = false;
-  if (!valid && entries.length === 0) {
-    for (const item of salvageJsonObjects(cleaned)) pushItem(item);
-    truncated = entries.length > 0;
+  if (rawItems.length === 0) {
+    for (const item of lineObjects.entries) pushItem(item);
   }
 
-  return { valid: valid || entries.length > 0, entries, truncated };
+  // 成员档案（当前状态快照）
+  const profiles = [];
+  const pushProfile = (raw) => {
+    const profile = normalizeMemoryProfile(raw);
+    if (!profile) return;
+    const existing = profiles.findIndex((p) => p.member === profile.member);
+    if (existing === -1) profiles.push(profile);
+    else profiles[existing] = profile;
+  };
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const key of ['profiles', 'members', 'roster']) {
+      if (Array.isArray(value[key])) value[key].forEach(pushProfile);
+    }
+  }
+  if (profiles.length === 0) {
+    for (const item of lineObjects.profiles) pushProfile(item);
+  }
+
+  // JSON 整体不合法（被截断 / 混入解释 / 转义坏了）时，按段抢救完整的对象
+  let truncated = false;
+  if (entries.length === 0) {
+    for (const item of salvageSectionObjects(cleaned, 'entries')) pushItem(item);
+    if (entries.length === 0) {
+      for (const item of salvageJsonObjects(cleaned)) pushItem(item);
+    }
+    truncated = entries.length > 0;
+  }
+  if (profiles.length === 0) {
+    for (const item of salvageSectionObjects(cleaned, 'profiles')) pushProfile(item);
+  }
+
+  return {
+    valid: valid || entries.length > 0,
+    entries,
+    profiles,
+    truncated,
+    repaired,
+    skipped: lineObjects.skipped,
+  };
 }
 
 const MEMORY_LEVEL_LABELS = {
@@ -1259,7 +1734,7 @@ const MEMORY_DEFAULT_PROMPTS = {
   year: '把本年的季度记忆上卷成年度记忆：只保留跨季度仍然成立的长期信息，其余一律合并或删除。',
 };
 
-function memorySystemPrompt(level, budget, isUpRoll) {
+function memorySystemPrompt(level, budget, isUpRoll, timeNote) {
   const levelLabel = MEMORY_LEVEL_LABELS[level] || '';
   const custom = ((config.memory && config.memory.prompts) || {})[level];
   const hasCustom = typeof custom === 'string' && custom.trim().length > 0;
@@ -1281,25 +1756,38 @@ function memorySystemPrompt(level, budget, isUpRoll) {
 
   const parts = [
     `你是群聊长期记忆压缩助手。本次压缩的是${levelLabel || ''}的群聊内容，供群成员 AI 之后参考。`,
+    timeNote ? `【时间范围】${timeNote}。所有时间都要写成绝对日期，不要用「明天 / 下周」这类相对说法。` : '',
     strategy,
     '必须区分「哪个成员」和「什么时间」。',
     `分类只允许：${MEMORY_CATEGORIES.join('、')}。`,
     `「${MEMORY_DROP_CATEGORY}」不要输出；「临时信息」保留并标注。`,
-    '输出格式固定，不要改动：只输出一个 JSON 对象，不要代码块、不要解释：{"entries":[{"category":"事实","member":"小智","time":"2026-09-10 14:03","content":"..."}]}。',
-    `篇幅硬限制（必须遵守）：entries 总数不超过 ${maxEntries} 条，每条 content 不超过 40 字；同一成员、同一主题必须合并成一条，禁止逐条照抄原文。`,
+    '输出格式固定（JSONL：一行一个 JSON 对象，不要数组、不要代码块、不要解释、不要多余文字）：',
+    '{"type":"entry","category":"事件","member":"小智","time":"2026-09-10 14:03","topic":"百合海老聚餐","importance":3,"status":"pending","content":"杏请客，定档 9/25 晚上"}',
+    '{"type":"profile","member":"eden","identity":"群主；真人","aliases":["阿雪（已废弃）"],"relations":[],"preferences":["剧情类/孤寂感作品"],"ongoing":["2b2t 铺 CLANNAD 地图画"],"pending":[],"resolved":["百合海老聚餐（9/25 已举行）"],"notes":"作息约 22 点睡"}',
+    '每一行必须是上述两种之一；没有新信息的成员不要输出 profile 行；数值字段不要加引号。',
+    '【字段规则】importance 取 1/2/3：3 = 必须保留（承诺与约定、身份与称呼、关系变化、重要事件、明确长期偏好、进行中的项目），2 = 较重要，1 = 一般。' +
+      'status 取 active（一般）/ pending（未完成）/ done（已完成）/ expired（已过时）。' +
+      'topic 是同一件事的短主题名（如「百合海老聚餐」「2b2t-CLANNAD」），同一件事必须用同一个 topic，便于合并与新旧覆盖。',
+    '【必须保留】importance=3 的条目在任何层级都只能合并、不能删除；status=pending 的条目必须一直被保留，直到它被标为 done 或 expired。',
+    '【上卷顺序】先逐条检查输入里所有 status=pending 与 importance=3 的条目，确认保留、更新或标注为已解决，再压缩其余条目；' +
+      '同一 topic 出现新旧冲突时（例如「催定档」与「已定档」），只保留更新的那条，旧说法不要输出。',
+    '【成员档案 profiles】每个成员一份「当前状态快照」，不是流水账：identity/aliases/relations/preferences/ongoing/pending/resolved/notes 都是短句数组，' +
+      '过时信息要更新掉而不是追加；pending 只留真正未完成的，完成或取消的移到 resolved；只输出本层有新信息的成员。',
+    '【置顶记忆】如果输入里给了「成员档案」或「置顶记忆」，必须当成事实保留与更新，不得丢弃。',
+    `篇幅硬限制（必须遵守）：entries 总数不超过 ${maxEntries} 条，每条 content 不超过 40 字；profiles 每个数组字段不超过 8 项、每项不超过 40 字。`,
     `总输出必须在 ${budget} tokens 以内写完，写完立刻停止；宁可少写几条，也不要写不完被截断。`,
   ].filter((line) => String(line || '').trim());
   if (upRollText && !usesUpRollPlaceholder) parts.push(upRollText);
   return parts.join('\n');
 }
 
-async function requestMemoryCompression(settings, level, content, budget, isUpRoll) {
+async function requestMemoryCompression(settings, level, content, budget, isUpRoll, timeNote) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(settings.timeoutMs) || 60000);
   const body = {
     model: settings.model,
     messages: [
-      { role: 'system', content: memorySystemPrompt(level, budget, isUpRoll) },
+      { role: 'system', content: memorySystemPrompt(level, budget, isUpRoll, timeNote) },
       { role: 'user', content },
     ],
     stream: false,
@@ -1363,41 +1851,86 @@ async function generateDailyMemory(dateKey, run) {
     return { status: 'skipped' };
   }
 
-  const parts = usable.map(formatMessageForMemory);
+  // 把「成员档案 + 置顶记忆」放在输入最前面，让模型据此更新而不是重写
+  const promptContext = await buildMemoryPromptContext();
+  const parts = promptContext
+    ? [promptContext, ...usable.map(formatMessageForMemory)]
+    : usable.map(formatMessageForMemory);
   const chunks = splitMemoryInput(parts, settings.maxInputChars);
   const budget = Math.max(1, Number(settings.budgets.daily) || 2000);
   const budgetPerChunk = Math.max(1, Math.floor(budget / chunks.length));
   const allEntries = [];
+  const allProfiles = [];
 
   for (const chunk of chunks) {
-    const result = await requestMemoryCompression(settings, 'daily', chunk, budgetPerChunk, false);
+    const result = await requestMemoryCompression(
+      settings,
+      'daily',
+      chunk,
+      budgetPerChunk,
+      false,
+      `${dateKey}（今天：${serverDateKey(Date.now())}）`
+    );
     const parsed = parseMemoryEntries(result.content, '', dateKey);
     if (!parsed.valid) {
       throw new Error(`日压缩返回无法解析的内容：${dateKey}`);
     }
     if (parsed.truncated) {
+      const reason =
+        (result.finishReason || '') === 'length'
+          ? `输出被截断（预算 ${budgetPerChunk} tokens）`
+          : `输出不是合法 JSON（finish_reason=${result.finishReason || '?'}），已按对象抢救`;
       console.warn(
-        `[记忆] 日压缩输出被截断（finish_reason=${result.finishReason || 'length'}，预算 ${budgetPerChunk} tokens）：${dateKey}，已抢救 ${parsed.entries.length} 条`
+        `[记忆] 日压缩${reason}：${dateKey}，已保留 ${parsed.entries.length} 条｜原文前 200 字：${String(
+          result.content
+        )
+          .slice(0, 200)
+          .replace(/\s+/g, ' ')}`
       );
+      await dumpBadMemoryOutput('daily', dateKey, result.finishReason, result.content);
       recordMemoryEvent(
         run,
         'daily',
         dateKey,
         'truncated',
-        `输出被截断，已保留 ${parsed.entries.length} 条`
+        `${reason}，已保留 ${parsed.entries.length} 条`
+      );
+    }
+    if (parsed.skipped > 0) {
+      console.warn(
+        `[记忆] 日压缩有 ${parsed.skipped} 行无法解析，已跳过：${dateKey}（原始输出已留档 _last-bad-output.txt）`
+      );
+      await dumpBadMemoryOutput('daily', dateKey, result.finishReason, result.content);
+    }
+    if (parsed.repaired) {
+      console.warn(
+        `[记忆] 日压缩输出不是纯 JSON，已从文本中提取对象：${dateKey}（前 120 字：${String(
+          result.content
+        )
+          .slice(0, 120)
+          .replace(/\s+/g, ' ')}）`
       );
     }
     if (parsed.entries.length) allEntries.push(...parsed.entries);
+    for (const profile of parsed.profiles) {
+      const idx = allProfiles.findIndex((p) => p.member === profile.member);
+      if (idx === -1) allProfiles.push(profile);
+      else allProfiles[idx] = profile;
+    }
   }
 
   const entries = dedupeMemoryEntries(allEntries);
+  const previous = await readMemoryFile('daily', dateKey);
+  const profiles = mergeMemoryProfiles(previous && previous.profiles, allProfiles);
 
   await writeMemoryFile('daily', dateKey, {
+    version: 2,
     level: 'daily',
     key: dateKey,
     createdAt: Date.now(),
     range: { start: dateKey, end: dateKey },
     entries,
+    profiles,
   });
 
   if (settings.debug) {
@@ -1562,42 +2095,86 @@ async function generatePeriodMemory(level, refDateKey, run) {
     return { status: 'skipped' };
   }
 
-  const parts = entries.map((entry) => formatMemoryEntries([entry]));
+  const promptContext = await buildMemoryPromptContext();
+  const parts = promptContext
+    ? [promptContext, ...entries.map((entry) => formatMemoryEntries([entry]))]
+    : entries.map((entry) => formatMemoryEntries([entry]));
   const chunks = splitMemoryInput(parts, settings.maxInputChars);
   const budget = Math.max(1, Number(settings.budgets[level]) || 3000);
   const budgetPerChunk = Math.max(1, Math.floor(budget / chunks.length));
   const allEntries = [];
+  const allProfiles = [];
 
   for (const chunk of chunks) {
-    const result = await requestMemoryCompression(settings, level, chunk, budgetPerChunk, true);
+    const result = await requestMemoryCompression(
+      settings,
+      level,
+      chunk,
+      budgetPerChunk,
+      true,
+      `${range.start} ~ ${range.end}（今天：${serverDateKey(Date.now())}）`
+    );
     const parsed = parseMemoryEntries(result.content, '', refDateKey);
     if (!parsed.valid) {
       throw new Error(`${level} 压缩返回无法解析的内容：${refDateKey}`);
     }
     if (parsed.truncated) {
+      const reason =
+        (result.finishReason || '') === 'length'
+          ? `输出被截断（预算 ${budgetPerChunk} tokens）`
+          : `输出不是合法 JSON（finish_reason=${result.finishReason || '?'}），已按对象抢救`;
       console.warn(
-        `[记忆] ${level} 输出被截断（finish_reason=${result.finishReason || 'length'}，预算 ${budgetPerChunk} tokens）：${refDateKey}，已抢救 ${parsed.entries.length} 条`
+        `[记忆] ${level} ${reason}：${refDateKey}，已保留 ${parsed.entries.length} 条｜原文前 200 字：${String(
+          result.content
+        )
+          .slice(0, 200)
+          .replace(/\s+/g, ' ')}`
       );
+      await dumpBadMemoryOutput(level, periodKey(level, refDateKey), result.finishReason, result.content);
       recordMemoryEvent(
         run,
         level,
         periodKey(level, refDateKey),
         'truncated',
-        `输出被截断，已保留 ${parsed.entries.length} 条`
+        `${reason}，已保留 ${parsed.entries.length} 条`
+      );
+    }
+    if (parsed.skipped > 0) {
+      console.warn(
+        `[记忆] ${level} 有 ${parsed.skipped} 行无法解析，已跳过：${refDateKey}（原始输出已留档 _last-bad-output.txt）`
+      );
+      await dumpBadMemoryOutput(level, periodKey(level, refDateKey), result.finishReason, result.content);
+    }
+    if (parsed.repaired) {
+      console.warn(
+        `[记忆] ${level} 输出不是纯 JSON，已从文本中提取对象：${refDateKey}（前 120 字：${String(
+          result.content
+        )
+          .slice(0, 120)
+          .replace(/\s+/g, ' ')}）`
       );
     }
     if (parsed.entries.length) allEntries.push(...parsed.entries);
+    for (const profile of parsed.profiles) {
+      const idx = allProfiles.findIndex((p) => p.member === profile.member);
+      if (idx === -1) allProfiles.push(profile);
+      else allProfiles[idx] = profile;
+    }
   }
 
   const merged = dedupeMemoryEntries(allEntries);
 
   const key = periodKey(level, refDateKey);
+  const previous = await readMemoryFile(level, key);
+  const profiles = mergeMemoryProfiles(previous && previous.profiles, allProfiles);
   await writeMemoryFile(level, key, {
+    version: 2,
     level,
     key,
     createdAt: Date.now(),
     range,
     entries: merged,
+    profiles,
   });
 
   if (settings.debug) {
@@ -1708,17 +2285,26 @@ async function memoryHasAnyLevelFile() {
 async function buildMemorySummary() {
   const settings = getMemorySettings();
   if (!memoryIsReady(settings)) return '';
-  if (!(await memoryHasAnyLevelFile())) return '';
   const today = serverDateKey(Date.now());
   const yesterday = addDaysKey(today, -1);
   const { y } = parseDateKey(today);
   const startDate = dateKeyFromParts(y - 1, 1, 1);
-  const sources = await gatherMemorySources(startDate, yesterday, 'year', {
-    repair: false,
-  });
-  const entries = sources.flatMap((source) => source.entries);
-  if (entries.length === 0) return '';
-  return '【群聊长期记忆】\n' + formatMemoryEntries(entries);
+
+  // 成员档案与置顶记忆优先，条目作为补充（条目仍是"上个自然年 1/1 → 昨天"）
+  const [hasLevelFile, profiles, pins] = await Promise.all([
+    memoryHasAnyLevelFile(),
+    collectMemoryProfiles(),
+    readMemoryPins(),
+  ]);
+  let entries = [];
+  if (hasLevelFile) {
+    const sources = await gatherMemorySources(startDate, yesterday, 'year', { repair: false });
+    entries = sources.flatMap((source) => source.entries);
+  }
+
+  const blocks = [formatProfileBlock(profiles), formatPinBlock(pins)];
+  if (entries.length > 0) blocks.push('【群聊长期记忆】\n' + formatMemoryEntries(entries));
+  return blocks.filter(Boolean).join('\n\n');
 }
 
 async function listCompletedDayKeys(today) {
@@ -3527,6 +4113,9 @@ async function buildMemoryStatus() {
     },
     customPrompts: Object.keys(prompts).filter((level) => String(prompts[level] || '').trim()),
     lastRun: await readLastMemoryRun(),
+    pins: (await readMemoryPins()).length,
+    profileMembers: (await collectMemoryProfiles()).length,
+    pendingKeywords: getPendingKeywords(),
   };
 }
 
@@ -3672,6 +4261,14 @@ function normalizeSettings(raw) {
         if (value === undefined || value === null) continue;
         cfg.memory.prompts[key] = String(value).trim();
       }
+    }
+    // pending 关键词兜底：数组，去空白、去空项（空数组=关闭兜底）
+    if (cfg.memory.pendingKeywords !== undefined) {
+      const list = Array.isArray(cfg.memory.pendingKeywords) ? cfg.memory.pendingKeywords : [];
+      cfg.memory.pendingKeywords = list
+        .map((item) => String(item == null ? '' : item).trim())
+        .filter(Boolean)
+        .slice(0, 40);
     }
   }
   return cfg;
@@ -3863,6 +4460,15 @@ function validateSettings(cfg) {
           if (typeof value !== 'string') errors.push(`memory.prompts.${key} 必须是字符串`);
           else if (value.length > 4000) errors.push(`memory.prompts.${key} 不能超过 4000 字`);
         }
+      }
+    }
+    if (cfg.memory.pendingKeywords !== undefined) {
+      if (!Array.isArray(cfg.memory.pendingKeywords)) {
+        errors.push('memory.pendingKeywords 必须是数组');
+      } else if (cfg.memory.pendingKeywords.some((item) => typeof item !== 'string')) {
+        errors.push('memory.pendingKeywords 只能包含字符串');
+      } else if (cfg.memory.pendingKeywords.some((item) => item.trim().length > 20)) {
+        errors.push('memory.pendingKeywords 单个关键词不能超过 20 字');
       }
     }
     validateThinking(cfg.memory.thinking, 'memory.thinking', errors, numeric, boolean);
@@ -4280,6 +4886,116 @@ function handleApi(req, res, url) {
       'Content-Length': Buffer.byteLength(body),
     });
     res.end(body);
+    return true;
+  }
+
+  // ---------------- 记忆管理（仅 admin；写操作要求同源） ----------------
+
+  if (url.pathname === '/api/memory/overview' && req.method === 'GET') {
+    if (!getAdminUser(req)) {
+      sendJson(res, 403, { ok: false, message: '仅管理员可用' });
+      return true;
+    }
+    buildMemoryOverview()
+      .then((data) => sendJson(res, 200, Object.assign({ ok: true }, data)))
+      .catch((err) => {
+        console.error('[记忆] 读取总览失败：', err && err.message ? err.message : err);
+        sendJson(res, 500, { ok: false, message: '读取记忆总览失败' });
+      });
+    return true;
+  }
+
+  if (url.pathname === '/api/memory/file' && req.method === 'GET') {
+    if (!getAdminUser(req)) {
+      sendJson(res, 403, { ok: false, message: '仅管理员可用' });
+      return true;
+    }
+    const level = (url.searchParams.get('level') || '').trim();
+    const key = (url.searchParams.get('key') || '').trim();
+    if (!isValidMemoryLevelKey(level, key)) {
+      sendJson(res, 400, { ok: false, message: '层级或日期不合法' });
+      return true;
+    }
+    readMemoryFile(level, key)
+      .then((file) => sendJson(res, 200, { ok: true, level, key, file: file || null }))
+      .catch((err) => {
+        console.error('[记忆] 读取记忆文件失败：', err && err.message ? err.message : err);
+        sendJson(res, 500, { ok: false, message: '读取记忆文件失败' });
+      });
+    return true;
+  }
+
+  if (url.pathname === '/api/memory/pin' && req.method === 'POST') {
+    if (!getAdminUser(req)) {
+      sendJson(res, 403, { ok: false, message: '仅管理员可用' });
+      return true;
+    }
+    if (!isSameOriginRequest(req)) {
+      sendJson(res, 403, { ok: false, message: '请求来源校验失败，请刷新页面后重试' });
+      return true;
+    }
+    readJsonBody(req, 64 * 1024)
+      .then(async (body) => {
+        const action = String(body.action || 'add').trim().toLowerCase();
+        const pin = normalizeMemoryPin({
+          member: body.member,
+          topic: body.topic,
+          content: body.content,
+          source: body.source,
+        });
+        if (!pin) {
+          sendJson(res, 400, { ok: false, message: '缺少要置顶的内容' });
+          return;
+        }
+        const list = await readMemoryPins();
+        const isSame = (item) =>
+          item.member === pin.member && item.topic === pin.topic && item.content === pin.content;
+        const next =
+          action === 'remove'
+            ? list.filter((item) => !isSame(item))
+            : list.some(isSame)
+              ? list
+              : list.concat([pin]);
+        await writeMemoryPins(next);
+        sendJson(res, 200, { ok: true, pins: next });
+      })
+      .catch((err) =>
+        sendJson(res, 400, {
+          ok: false,
+          message: err && err.message ? err.message : '请求格式错误',
+        })
+      );
+    return true;
+  }
+
+  if (url.pathname === '/api/memory/entry' && req.method === 'POST') {
+    if (!getAdminUser(req)) {
+      sendJson(res, 403, { ok: false, message: '仅管理员可用' });
+      return true;
+    }
+    if (!isSameOriginRequest(req)) {
+      sendJson(res, 403, { ok: false, message: '请求来源校验失败，请刷新页面后重试' });
+      return true;
+    }
+    readJsonBody(req, 64 * 1024)
+      .then(async (body) => {
+        const result = await patchMemoryEntry({
+          level: String(body.level || '').trim(),
+          key: String(body.key || '').trim(),
+          member: String(body.member || '').trim(),
+          topic: body.topic,
+          content: String(body.content || ''),
+          status: body.status,
+          importance: body.importance,
+        });
+        sendJson(res, 200, Object.assign({ ok: true }, result));
+      })
+      .catch((err) =>
+        sendJson(res, 400, {
+          ok: false,
+          message: err && err.message ? err.message : '更新失败',
+        })
+      );
     return true;
   }
 

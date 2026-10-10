@@ -211,6 +211,13 @@ const MEMORY_FIELDS = [
   { path: 'memory.maxTokens', label: '最大输出', type: 'number', min: 1 },
   { path: 'memory.timeoutMs', label: '超时（毫秒）', type: 'number', min: 1000 },
   { path: 'memory.maxInputChars', label: '单次输入字符上限', type: 'number', min: 1000 },
+  {
+    path: 'memory.pendingKeywords',
+    label: '待办关键词兜底',
+    type: 'stringList',
+    wide: true,
+    hint: '每行一个。条目内容命中这些词时，强制标为「未完成」且永不丢弃；清空即关闭兜底',
+  },
   { path: 'memory.storageDir', label: '记忆目录', type: 'text', hint: '修改后需要重启服务' },
 ];
 
@@ -538,7 +545,357 @@ function renderAll() {
   sectionsEl.textContent = '';
   const status = renderMemoryStatus();
   if (status) sectionsEl.appendChild(status);
+  sectionsEl.appendChild(renderMemoryManager());
   for (const section of SCHEMA) sectionsEl.appendChild(renderSection(section));
+}
+
+// ---------------- 记忆管理（浏览 / 置顶 / 标记状态） ----------------
+
+const MEMORY_LEVEL_NAMES = { daily: '日', weekly: '周', monthly: '月', quarter: '季', year: '年' };
+const MEMORY_STATUS_NAMES = { active: '一般', pending: '未完成', done: '已完成', expired: '已过期' };
+const MEMORY_PROFILE_FIELDS = [
+  ['aliases', '别名'],
+  ['relations', '关系'],
+  ['preferences', '偏好'],
+  ['ongoing', '进行中'],
+  ['pending', '待办'],
+  ['resolved', '已了结'],
+];
+
+const memoryManager = {
+  loaded: false,
+  loading: false,
+  level: 'monthly',
+  key: '',
+  overview: null,
+  file: null,
+  query: '',
+};
+
+async function memoryApi(path, options) {
+  const res = await fetch(
+    path,
+    Object.assign({ credentials: 'same-origin', cache: 'no-store' }, options || {})
+  );
+  if (redirectIfInvalid(res)) throw new Error('未授权');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.message || '操作失败');
+  return data;
+}
+
+async function loadMemoryOverview() {
+  if (memoryManager.loading) return;
+  memoryManager.loading = true;
+  renderAll();
+  try {
+    const data = await memoryApi('/api/memory/overview');
+    memoryManager.overview = data;
+    const files = data.levels[memoryManager.level] || [];
+    if (!files.some((f) => f.key === memoryManager.key)) {
+      memoryManager.key = files.length ? files[0].key : '';
+    }
+    memoryManager.file = null;
+    if (memoryManager.key) await loadMemoryFile();
+    memoryManager.loaded = true;
+  } catch (err) {
+    setStatus(`记忆管理加载失败：${err.message}`, 'error', true);
+  } finally {
+    memoryManager.loading = false;
+    renderAll();
+  }
+}
+
+async function loadMemoryFile() {
+  if (!memoryManager.key) {
+    memoryManager.file = null;
+    return;
+  }
+  const data = await memoryApi(
+    `/api/memory/file?level=${encodeURIComponent(memoryManager.level)}&key=${encodeURIComponent(
+      memoryManager.key
+    )}`
+  );
+  memoryManager.file = data.file;
+}
+
+async function memoryAction(path, payload) {
+  try {
+    await memoryApi(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    memoryManager.loading = false;
+    await loadMemoryOverview();
+    setStatus('记忆已更新', 'success');
+  } catch (err) {
+    setStatus(`操作失败：${err.message}`, 'error', true);
+  }
+}
+
+function memoryButton(label, handler, kind) {
+  const button = el('button', `settings-btn small ${kind || 'ghost'}`, label);
+  button.type = 'button';
+  button.addEventListener('click', handler);
+  return button;
+}
+
+function pinPayload(entry, source) {
+  return {
+    action: 'add',
+    member: entry.member || '',
+    topic: entry.topic || '',
+    content: entry.content || '',
+    source: source || '',
+  };
+}
+
+function renderMemoryManager() {
+  const wrap = el('section', 'settings-section');
+  const head = el('header', 'settings-section-head');
+  head.appendChild(el('h2', null, '记忆管理'));
+  head.appendChild(
+    el(
+      'p',
+      'settings-section-desc',
+      '浏览各层记忆；把重要条目置顶（不会被压缩丢弃），或把过时条目改为已完成 / 已过期'
+    )
+  );
+  wrap.appendChild(head);
+
+  const body = el('div', 'settings-section-body');
+  wrap.appendChild(body);
+
+  if (!memoryManager.loaded) {
+    body.appendChild(
+      el('p', 'settings-loading', memoryManager.loading ? '加载中…' : '尚未加载')
+    );
+    body.appendChild(memoryButton('加载记忆', loadMemoryOverview));
+    return wrap;
+  }
+
+  const overview = memoryManager.overview || { levels: {}, pins: [], profiles: [] };
+  const toolbar = el('div', 'memory-toolbar');
+
+  const levelSelect = document.createElement('select');
+  for (const level of ['daily', 'weekly', 'monthly', 'quarter', 'year']) {
+    const option = document.createElement('option');
+    option.value = level;
+    option.textContent = `${MEMORY_LEVEL_NAMES[level]}记忆`;
+    if (level === memoryManager.level) option.selected = true;
+    levelSelect.appendChild(option);
+  }
+  levelSelect.addEventListener('change', async () => {
+    memoryManager.level = levelSelect.value;
+    const files = memoryManager.overview.levels[memoryManager.level] || [];
+    memoryManager.key = files.length ? files[0].key : '';
+    try {
+      await loadMemoryFile();
+    } catch (err) {
+      setStatus(`读取失败：${err.message}`, 'error');
+    }
+    renderAll();
+  });
+  toolbar.appendChild(levelSelect);
+
+  const files = overview.levels[memoryManager.level] || [];
+  const fileSelect = document.createElement('select');
+  if (files.length === 0) {
+    const option = document.createElement('option');
+    option.textContent = '（还没有这一层的记忆）';
+    option.value = '';
+    fileSelect.appendChild(option);
+  }
+  for (const item of files) {
+    const option = document.createElement('option');
+    option.value = item.key;
+    option.textContent = `${item.key}（${item.entries} 条${item.profiles ? ` / ${item.profiles} 档案` : ''}）`;
+    if (item.key === memoryManager.key) option.selected = true;
+    fileSelect.appendChild(option);
+  }
+  fileSelect.addEventListener('change', async () => {
+    memoryManager.key = fileSelect.value;
+    try {
+      await loadMemoryFile();
+    } catch (err) {
+      setStatus(`读取失败：${err.message}`, 'error');
+    }
+    renderAll();
+  });
+  toolbar.appendChild(fileSelect);
+
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.placeholder = '搜索条目（成员 / 主题 / 内容）…';
+  search.value = memoryManager.query;
+  search.addEventListener('input', () => {
+    memoryManager.query = search.value;
+    renderAll();
+    const next = document.querySelector('.memory-toolbar input[type="search"]');
+    if (next) next.focus();
+  });
+  toolbar.appendChild(search);
+  toolbar.appendChild(memoryButton('刷新', loadMemoryOverview));
+  body.appendChild(toolbar);
+
+  if (overview.pins.length > 0) {
+    const pinBox = el('div', 'memory-pins');
+    pinBox.appendChild(el('p', 'field-label', `置顶记忆（${overview.pins.length}）`));
+    for (const pin of overview.pins) {
+      const row = el('div', 'memory-pin-row');
+      row.appendChild(
+        el(
+          'span',
+          'memory-pin-text',
+          `[${pin.member || '—'}${pin.topic ? `·${pin.topic}` : ''}] ${pin.content}`
+        )
+      );
+      row.appendChild(
+        memoryButton('取消置顶', () =>
+          memoryAction('/api/memory/pin', {
+            action: 'remove',
+            member: pin.member,
+            topic: pin.topic,
+            content: pin.content,
+          })
+        )
+      );
+      pinBox.appendChild(row);
+    }
+    body.appendChild(pinBox);
+  }
+
+  if (overview.profiles.length > 0) {
+    const grid = el('div', 'memory-profiles');
+    for (const profile of overview.profiles) {
+      const card = el('div', 'memory-profile');
+      card.appendChild(el('div', 'memory-profile-head', profile.member));
+      if (profile.identity) card.appendChild(el('div', 'memory-profile-line', profile.identity));
+      for (const [field, label] of MEMORY_PROFILE_FIELDS) {
+        const items = profile[field] || [];
+        if (items.length === 0) continue;
+        const line = el('div', 'memory-profile-line');
+        line.appendChild(el('span', 'memory-profile-label', label));
+        for (const item of items) {
+          const chip = el('span', 'memory-chip clickable', item);
+          chip.title = '点击置顶这条';
+          chip.addEventListener('click', () =>
+            memoryAction('/api/memory/pin', {
+              action: 'add',
+              member: profile.member,
+              topic: label,
+              content: item,
+              source: 'profile',
+            })
+          );
+          line.appendChild(chip);
+        }
+        card.appendChild(line);
+      }
+      if (profile.notes) card.appendChild(el('div', 'memory-profile-line', profile.notes));
+      grid.appendChild(card);
+    }
+    body.appendChild(grid);
+  }
+
+  const file = memoryManager.file;
+  if (!file || !Array.isArray(file.entries)) {
+    body.appendChild(el('p', 'settings-empty', '这一层还没有记忆文件'));
+    return wrap;
+  }
+
+  const query = memoryManager.query.trim().toLowerCase();
+  const entries = file.entries.filter((entry) => {
+    if (!query) return true;
+    return `${entry.member || ''} ${entry.category || ''} ${entry.topic || ''} ${entry.content || ''}`
+      .toLowerCase()
+      .includes(query);
+  });
+  body.appendChild(
+    el(
+      'p',
+      'settings-list-count',
+      `共 ${entries.length} 条${query ? `（筛选自 ${file.entries.length} 条）` : ''}`
+    )
+  );
+
+  const list = el('div', 'memory-entries');
+  for (const entry of entries) {
+    const row = el('div', 'memory-entry');
+    const head = el('div', 'memory-entry-head');
+    head.appendChild(el('span', 'memory-entry-member', entry.member || '—'));
+    head.appendChild(el('span', 'memory-chip', entry.category || '事实'));
+    if (entry.topic) head.appendChild(el('span', 'memory-chip', entry.topic));
+    const status = entry.status || 'active';
+    head.appendChild(
+      el('span', `memory-chip status-${status}`, MEMORY_STATUS_NAMES[status] || status)
+    );
+    head.appendChild(
+      el('span', `memory-chip importance-${entry.importance || 2}`, `★${entry.importance || 2}`)
+    );
+    head.appendChild(el('span', 'memory-entry-time', entry.time || ''));
+    row.appendChild(head);
+    row.appendChild(el('div', 'memory-entry-content', entry.content || ''));
+
+    const actions = el('div', 'memory-entry-actions');
+    actions.appendChild(
+      memoryButton('置顶', () =>
+        memoryAction(
+          '/api/memory/pin',
+          pinPayload(entry, `${memoryManager.level}/${memoryManager.key}`)
+        )
+      )
+    );
+    if (status !== 'done') {
+      actions.appendChild(
+        memoryButton('标记完成', () =>
+          memoryAction('/api/memory/entry', {
+            level: memoryManager.level,
+            key: memoryManager.key,
+            member: entry.member,
+            topic: entry.topic,
+            content: entry.content,
+            status: 'done',
+          })
+        )
+      );
+    }
+    if (status !== 'expired') {
+      actions.appendChild(
+        memoryButton(
+          '标记过期',
+          () =>
+            memoryAction('/api/memory/entry', {
+              level: memoryManager.level,
+              key: memoryManager.key,
+              member: entry.member,
+              topic: entry.topic,
+              content: entry.content,
+              status: 'expired',
+            }),
+          'danger'
+        )
+      );
+    }
+    if (status !== 'active') {
+      actions.appendChild(
+        memoryButton('恢复为一般', () =>
+          memoryAction('/api/memory/entry', {
+            level: memoryManager.level,
+            key: memoryManager.key,
+            member: entry.member,
+            topic: entry.topic,
+            content: entry.content,
+            status: 'active',
+          })
+        )
+      );
+    }
+    row.appendChild(actions);
+    list.appendChild(row);
+  }
+  body.appendChild(list);
+  return wrap;
 }
 
 const MEMORY_LEVEL_TEXT = { daily: '日', weekly: '周', monthly: '月', quarter: '季', year: '年' };
@@ -657,6 +1014,7 @@ async function loadSettings() {
     state.meta = data.meta || {};
     renderMeta();
     renderAll();
+    loadMemoryOverview();
     setStatus('配置已加载', 'info');
   } catch (_err) {
     setStatus('网络错误，请稍后重试', 'error');

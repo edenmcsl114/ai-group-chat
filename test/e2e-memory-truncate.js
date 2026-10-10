@@ -354,8 +354,8 @@ async function scenarioTruncated() {
   );
   assert(!dailyRequest.system.includes('{{maxEntries}}'), '占位符应被替换成实际数字');
   assert(
-    dailyRequest.system.includes('输出格式固定') && dailyRequest.system.includes('"entries"'),
-    '固定输出格式与 JSON 样例仍应追加'
+    dailyRequest.system.includes('输出格式固定') && dailyRequest.system.includes('"type":"entry"'),
+    '固定输出格式与 JSONL 样例仍应追加'
   );
   ok('自定义提示词生效、占位符被替换、输出格式约束保持不变');
 

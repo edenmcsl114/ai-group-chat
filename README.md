@@ -146,6 +146,7 @@
 | `backfillOnStartup` | 启动时是否扫描历史消息补齐缺失的记忆文件 |
 | `budgets.daily` / `weekly` / `monthly` / `quarter` / `year` | 各层压缩产物的目标 token 上限，默认 2k / 3k / 5k / 6k / 8k |
 | `prompts.daily` / `weekly` / `monthly` / `quarter` / `year` | 各层压缩策略提示词，留空用内置默认；**只影响「怎么压缩」，输出 JSON 格式与分类白名单由服务端固定追加**；也可以在设置界面「长期记忆 → 各层压缩提示词」里直接改 |
+| `pendingKeywords` | 「未完成的约定」关键词兜底，默认 `答应 / 约定 / 说好 / 别忘 / 待定 / 改天 / 下次 / 记得 / 欠 / 请客`；命中即标为 `pending` + `importance=3`，配成 `[]` 关闭 |
 | `storageDir` | 记忆文件目录，默认 `data/memory` |
 
 `prompts` 可用占位符：`{{level}}`、`{{levelLabel}}`、`{{budget}}`、`{{maxEntries}}`、`{{categories}}`、`{{dropCategory}}`、`{{upRoll}}`。例如想让月压缩更狠一点、只留长期事实：
@@ -202,6 +203,23 @@ AI 回复**只输出纯正文**（不再包 `[日期][时间][名字]{...}`）�
 
 压缩由“跨天惰性触发 + 服务启动检查”驱动：新一天第一次有消息时会先追平前一天，再依次检查周、月、季、年边界。记忆模型未配置或压缩失败时自动降级，群成员 AI 仍只读今天的原始消息，不影响聊天本身。
 
+### 条目状态、成员档案与置顶
+
+每条记忆条目除了 `category / member / time / content`，还会带：
+
+| 字段 | 说明 |
+| --- | --- |
+| `topic` | 同一件事的短主题名（如「百合海老聚餐」），用于合并与「新状态覆盖旧状态」 |
+| `importance` | 1 一般 / 2 较重要（默认）/ 3 **必须保留**：承诺约定、身份称呼、关系变化、重要事件、明确长期偏好、进行中的项目 |
+| `status` | `active` / `pending`（未完成）/ `done` / `expired`（已过时） |
+
+- `importance=3` 的条目**在任何层级只能合并、不能删除**；`pending` 会一直被保留，直到被标为 `done` / `expired`
+- 同一 `topic` 出现新旧冲突（例：先「催定档」后「已定档」）时只保留更新的那条，避免 AI 拿到过期状态
+- 每层压缩还会产出**成员档案 `profiles`**：每个成员一份「当前状态快照」（身份、别名、关系、偏好、进行中、待办、已了结）。注入 AI 时排在长期记忆之前，同一成员按 `updatedAt` 取最新的一份
+- 关键词兜底：条目内容命中 `pendingKeywords`（可在设置界面逐行编辑）时，自动标成 `pending` + `importance=3`
+
+设置页新增「记忆管理」：可以按层级浏览每份记忆、按关键词搜索、**把条目置顶**（写入 `data/memory/_pins.json`，永不丢弃，注入与压缩都会带上），以及把过时条目**标记完成 / 标记过期**（不提供物理删除；改动前会在 `data/memory/_backups/` 留一份备份，最多保留 20 份）。
+
 ### 压缩失败与输出截断的处理
 
 各层压缩共用同一套健壮性策略，避免"一层坏掉、全线停摆"：
@@ -220,7 +238,7 @@ AI 回复**只输出纯正文**（不再包 `[日期][时间][名字]{...}`）�
 - 登录账号：增删账号、改密码、改头像、授予/取消 admin
 - AI 成员：增删成员，以及人设、接口、密钥、模型、思考参数、自我判断覆盖项
 - 聊天与回复：回复模式、@ 规则、`@所有人` 关键词、自我判断参数、存储目录
-- 长期记忆：开关、压缩模型、各层 token 预算、**各层压缩提示词**、分段阈值、存储目录
+- 长期记忆：开关、压缩模型、各层 token 预算、各层压缩提示词、待办关键词兜底、分段阈值、存储目录；以及**记忆管理**（浏览 / 搜索 / 置顶 / 标记完成 / 标记过期）
 
 保存行为：
 
@@ -254,6 +272,7 @@ npm run test:self   # AI 自我判断/兜底/限制自测（模拟 AI）
 npm run test:memory # 分层长期记忆压缩与注入自测（模拟 AI）
 npm run test:memory-repair # 记忆压缩失败重试 / 损坏修复 / 超长输入分段自测
 npm run test:memory-truncate # 记忆输出被截断抢救 / 高层失败不阻塞日层自测
+npm run test:memory-upgrade # 成员档案 / 待办状态兜底 / 置顶记忆自测
 npm run test:memory-audit  # 启动时补齐缺失记忆文件自测
 npm run test:memory-summary # 多层记忆同时进入 AI 上下文自测
 npm run test:settings # 设置界面：admin 门禁 / 保存生效 / 持久化 / 恢复默认自测
@@ -383,7 +402,7 @@ sudo ufw allow 3000/tcp
 ├── package.json
 ├── data/
 │   ├── days/            # 按日消息文件 YYYY-MM-DD.jsonl（自动生成）
-│   ├── memory/          # 分层长期记忆文件 + _state.json + _last-run.json（自动生成）
+│   ├── memory/          # 分层长期记忆 + _state.json + _last-run.json + _pins.json + _backups/（自动生成）
 │   └── settings.json    # 设置界面保存的覆盖配置（自动生成，改配置不改 config.js）
 ├── test/                # 端到端自测脚本
 └── public/

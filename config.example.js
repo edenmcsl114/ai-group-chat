@@ -116,6 +116,9 @@ module.exports = {
       "quarter": 6000,
       "year": 8000
     },
+    // 「未完成的约定」关键词兜底：条目内容命中这些词时，强制标为 pending（未完成）+ importance=3（永不丢弃）。
+    // 配成 [] 即关闭兜底；也可以在设置界面里逐行编辑。
+    "pendingKeywords": ["答应", "约定", "说好", "别忘", "待定", "改天", "下次", "记得", "欠", "请客"],
     // 记忆文件目录（自动生成，默认 data/memory）
     "storageDir": "data/memory"
   },

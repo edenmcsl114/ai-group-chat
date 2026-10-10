@@ -245,6 +245,43 @@ async function main() {
   assert(noOrigin.status === 403, `缺少 Origin 的写请求应 403（实际 ${noOrigin.status}）`);
   ok('非同一来源的写请求被拒绝');
 
+  // ---- 记忆管理接口：admin 门禁 + 同源校验 + 参数校验 ----
+  const memDenied = await request('GET', '/api/memory/overview', null, userLogin.cookie);
+  assert(memDenied.status === 403, `普通账号访问记忆总览应 403（实际 ${memDenied.status}）`);
+  const memOverview = await request('GET', '/api/memory/overview', null, adminLogin.cookie);
+  const memOverviewData = JSON.parse(memOverview.body);
+  assert(
+    memOverview.status === 200 && memOverviewData.ok && memOverviewData.levels,
+    'admin 可以读取记忆总览'
+  );
+  assert(Array.isArray(memOverviewData.pins), '总览里带置顶列表');
+  ok('记忆管理接口仅 admin 可用');
+
+  const pinNoOrigin = await request(
+    'POST',
+    '/api/memory/pin',
+    { action: 'add', member: 'a', topic: 'b', content: 'c' },
+    adminLogin.cookie
+  );
+  assert(pinNoOrigin.status === 403, `缺少 Origin 的置顶请求应 403（实际 ${pinNoOrigin.status}）`);
+  const entryBadKey = await request(
+    'POST',
+    '/api/memory/entry',
+    { level: 'daily', key: '../../etc/passwd', member: 'a', content: 'b', status: 'done' },
+    adminLogin.cookie,
+    { Origin: ORIGIN }
+  );
+  assert(entryBadKey.status === 400, `非法日期应 400（实际 ${entryBadKey.status}）`);
+  const entryBadStatus = await request(
+    'POST',
+    '/api/memory/entry',
+    { level: 'daily', key: '2026-01-01', member: 'a', content: 'b', status: 'nonsense' },
+    adminLogin.cookie,
+    { Origin: ORIGIN }
+  );
+  assert(entryBadStatus.status === 400, `非法状态应 400（实际 ${entryBadStatus.status}）`);
+  ok('记忆管理写接口校验来源与参数');
+
   const badConfig = JSON.parse(JSON.stringify(settings.config));
   badConfig.users = [
     { username: 'dup', password: 'a', role: 'admin' },

@@ -472,6 +472,167 @@
   word-break: break-word;
 }
 
+/* ---------- 记忆管理 ---------- */
+
+.memory-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.memory-toolbar select,
+.memory-toolbar input[type='search'] {
+  padding: 7px 10px;
+  font-size: var(--text-sm);
+  color: var(--text-1);
+  background: var(--surface-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-sm);
+  max-width: 280px;
+}
+
+.memory-toolbar input[type='search'] {
+  flex: 1 1 180px;
+  min-width: 140px;
+}
+
+.memory-pins {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--brand-soft);
+  border: 1px solid var(--brand);
+  border-radius: var(--radius-md);
+}
+
+.memory-pin-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.memory-pin-text {
+  font-size: var(--text-sm);
+  color: var(--text-1);
+  word-break: break-word;
+}
+
+.memory-profiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-3);
+}
+
+.memory-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-md);
+}
+
+.memory-profile-head {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.memory-profile-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: var(--text-xs);
+  color: var(--text-2);
+  line-height: 1.6;
+}
+
+.memory-profile-label {
+  color: var(--text-3);
+}
+
+.memory-chip.clickable {
+  cursor: pointer;
+}
+
+.memory-chip.clickable:hover {
+  color: var(--brand-ink);
+  background: var(--brand-soft);
+}
+
+.memory-chip.status-pending {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.memory-chip.status-done {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.memory-chip.status-expired {
+  color: var(--text-3);
+  background: var(--surface-3);
+  text-decoration: line-through;
+}
+
+.memory-chip.importance-3 {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.memory-entries {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.memory-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-sm);
+}
+
+.memory-entry-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.memory-entry-member {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.memory-entry-time {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+
+.memory-entry-content {
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--text-1);
+  word-break: break-word;
+}
+
+.memory-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .settings-list-toolbar {
   display: flex;
   align-items: center;
