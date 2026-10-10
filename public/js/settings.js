@@ -565,6 +565,7 @@ const MEMORY_PROFILE_FIELDS = [
 const memoryManager = {
   loaded: false,
   loading: false,
+  pickedLevel: false,
   level: 'monthly',
   key: '',
   overview: null,
@@ -590,6 +591,14 @@ async function loadMemoryOverview() {
   try {
     const data = await memoryApi('/api/memory/overview');
     memoryManager.overview = data;
+    // 首次加载时，默认停在「最近有数据」的层级
+    if (!memoryManager.pickedLevel) {
+      memoryManager.pickedLevel = true;
+      const preferred = ['daily', 'weekly', 'monthly', 'quarter', 'year'].find(
+        (level) => ((data.levels && data.levels[level]) || []).length > 0
+      );
+      if (preferred) memoryManager.level = preferred;
+    }
     const files = data.levels[memoryManager.level] || [];
     if (!files.some((f) => f.key === memoryManager.key)) {
       memoryManager.key = files.length ? files[0].key : '';
