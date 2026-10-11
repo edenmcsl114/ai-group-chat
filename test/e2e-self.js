@@ -468,7 +468,7 @@ async function runBasicScenario() {
   console.log('【场景 1】self 模式基础行为\n');
   const harness = createHarness({
     label: '基础场景',
-    port: 3240,
+    port: 3250,
     storageTag: 'basic',
     selfDecision: { maxHops: 0 },
   });
@@ -589,7 +589,7 @@ async function runAITriggerScenario() {
   console.log('\n【场景 2】AI 消息触发其他 AI 自我判断\n');
   const harness = createHarness({
     label: 'AI 互触发场景',
-    port: 3241,
+    port: 3251,
     storageTag: 'aitrigger',
     selfDecision: { maxHops: 1 },
   });
@@ -634,7 +634,7 @@ async function runLimitScenario() {
   console.log('\n【场景 3】风暴预算与冷却限制\n');
   const harness = createHarness({
     label: '限制场景',
-    port: 3242,
+    port: 3252,
     storageTag: 'limit',
     selfDecision: {
       maxHops: 0,
@@ -705,7 +705,7 @@ async function runJudgeModelScenario() {
   console.log('\n【场景 4】判断模型单独配置\n');
   const harness = createHarness({
     label: '判断模型场景',
-    port: 3243,
+    port: 3253,
     storageTag: 'judgemodel',
     selfDecision: { maxHops: 0 },
     chatJudgeExtra: {
@@ -760,7 +760,7 @@ async function runAITriggerWithDefaultsScenario() {
   console.log('\n【场景 5】默认限制下 AI 消息触发接话\n');
   const harness = createHarness({
     label: '默认限制场景',
-    port: 3244,
+    port: 3254,
     storageTag: 'defaults',
     selfDecision: {
       maxHops: 2,
@@ -803,7 +803,7 @@ async function runSequentialJudgeScenario() {
   console.log('\n【场景 6】随机排序 + 串行判断（避免冷场）\n');
   const harness = createHarness({
     label: '串行判断场景',
-    port: 3245,
+    port: 3255,
     storageTag: 'sequential',
     selfDecision: { maxHops: 0, cooldownMs: 0 },
   });

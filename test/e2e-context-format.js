@@ -13,7 +13,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
-const APP_PORT = 3246;
+const APP_PORT = 3256;
 const APP_BASE = { hostname: '127.0.0.1', port: APP_PORT };
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 const LEGACY_REPLY = '收到，我看看';
