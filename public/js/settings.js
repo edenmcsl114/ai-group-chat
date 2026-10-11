@@ -147,7 +147,13 @@ const AI_FIELDS = [
   { path: 'model', label: '模型', type: 'text' },
   { path: 'temperature', label: '温度', type: 'number', step: '0.1', min: 0, max: 2 },
   { path: 'maxTokens', label: '最大输出', type: 'number', min: 1 },
-  { path: 'timeoutMs', label: '超时（毫秒）', type: 'number', min: 1000 },
+  {
+    path: 'timeoutMs',
+    label: '超时（毫秒）',
+    type: 'number',
+    min: 1000,
+    hint: '写满 maxTokens 需要时间，设太小会报「This operation was aborted」',
+  },
 ];
 
 const USER_FIELDS = [
@@ -216,7 +222,13 @@ const MEMORY_FIELDS = [
   { path: 'memory.model', label: '模型', type: 'text' },
   { path: 'memory.temperature', label: '温度', type: 'number', step: '0.1', min: 0, max: 2 },
   { path: 'memory.maxTokens', label: '最大输出', type: 'number', min: 1 },
-  { path: 'memory.timeoutMs', label: '超时（毫秒）', type: 'number', min: 1000 },
+  {
+    path: 'memory.timeoutMs',
+    label: '超时（毫秒）',
+    type: 'number',
+    min: 1000,
+    hint: '写满 maxTokens 需要时间：8k tokens 约 1–3 分钟；设太小会报「This operation was aborted」',
+  },
   { path: 'memory.maxInputChars', label: '单次输入字符上限', type: 'number', min: 1000 },
   {
     path: 'memory.budgetHeadroom',

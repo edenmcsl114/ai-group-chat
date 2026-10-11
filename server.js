@@ -1815,8 +1815,13 @@ function applyThinkingOptions(body, thinking) {
 }
 
 async function requestMemoryCompression(settings, level, content, budget, isUpRoll, timeNote) {
+  const timeoutMs = Math.max(1000, Number(settings.timeoutMs) || 60000);
+  let timedOut = false;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Number(settings.timeoutMs) || 60000);
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
   const body = {
     model: settings.model,
     messages: [
@@ -1867,6 +1872,14 @@ async function requestMemoryCompression(settings, level, content, budget, isUpRo
       finishReason: String(choice.finish_reason || ''),
       completionTokens: Number((payload.usage && payload.usage.completion_tokens) || 0),
     };
+  } catch (err) {
+    if (timedOut) {
+      throw new Error(
+        `记忆压缩超时：超过 ${Math.round(timeoutMs / 1000)} 秒被中断（timeoutMs），` +
+          '模型这次写得比较久；可在设置页把「长期记忆 → 超时（毫秒）」调大，或降低该层预算 / maxTokens'
+      );
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -2649,8 +2662,13 @@ async function performAIReply(agent, snapshot, depth, stormId) {
     broadcastSSE('ai_chunk', { message: partial });
   }
 
+  const aiTimeoutMs = Math.max(1000, Number(agent.timeoutMs) || 60000);
+  let aiTimedOut = false;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), agent.timeoutMs || 60000);
+  const timer = setTimeout(() => {
+    aiTimedOut = true;
+    controller.abort();
+  }, aiTimeoutMs);
   let fullText = '';
 
   try {
@@ -2762,8 +2780,12 @@ async function performAIReply(agent, snapshot, depth, stormId) {
   } catch (err) {
     // 流式模式下可能已经广播了"正在输入"占位气泡，
     // 带上 msgId 让前端能按 id 清理，避免残留空气泡
-    if (err && typeof err === 'object') err.msgId = msgId;
-    throw err;
+    const finalErr =
+      aiTimedOut && err && !/超时/.test(String(err.message || ''))
+        ? new Error(`AI 回复超时：超过 ${Math.round(aiTimeoutMs / 1000)} 秒被中断（timeoutMs）`)
+        : err;
+    if (finalErr && typeof finalErr === 'object') finalErr.msgId = msgId;
+    throw finalErr;
   } finally {
     clearTimeout(timer);
   }
