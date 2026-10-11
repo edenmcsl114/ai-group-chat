@@ -82,11 +82,17 @@ module.exports = {
     "debug": false,
     "apiBaseUrl": "",
     "apiKey": "",
-    "model": "deepseek-v4-flash",
+    // 压缩模型的输出上限差别很大（实测）：deepseek-chat ≈ 8192、deepseek-v4-flash ≈ 8192、
+    // deepseek-flash ≈ 20000+、deepseek-v4-pro 更高。写满一个月的记忆约需 8–9k tokens，
+    // 所以这里默认用 deepseek-flash + 更大的 maxTokens，避免月压缩被硬截断。
+    "model": "deepseek-flash",
     "temperature": 0.2,
-    "maxTokens": 8192,
+    "maxTokens": 32000,
     "timeoutMs": 60000,
     "thinking": {
+      // 实测思考 token 计入 max_tokens，压缩要把额度留给正文，所以默认显式关闭思考；
+      // 想让它思考就改成 "on"（会占用一部分输出额度），"auto" = 不下发该参数
+      "mode": "off",
       "enabled": false,
       "effort": "medium",
       "sendEffort": false
@@ -118,8 +124,9 @@ module.exports = {
     },
     // 输出预算上浮：实际 max_tokens = 各层预算 × (1 + budgetHeadroom)。
     // 预算本身仍是提示词里的目标值，上浮只作为「别被硬截断」的余量；0 表示不预留。
-    // 实测 deepseek-chat 写满一个月的记忆约需 7–8k tokens（月预算 5000），所以默认给 50% 余量。
-    "budgetHeadroom": 0.5,
+    // 实测写满一个月的记忆约需 7–10k tokens（月预算只有 5000），所以默认给 100% 余量；
+    // 实际上限还会被 maxTokens 封顶，所以 maxTokens 小的配置不受影响。
+    "budgetHeadroom": 1,
     // 「未完成的约定」关键词兜底：条目内容命中这些词时，强制标为 pending（未完成）+ importance=3（永不丢弃）。
     // 配成 [] 即关闭兜底；也可以在设置界面里逐行编辑。
     "pendingKeywords": ["答应", "约定", "说好", "别忘", "待定", "改天", "下次", "记得", "欠", "请客"],

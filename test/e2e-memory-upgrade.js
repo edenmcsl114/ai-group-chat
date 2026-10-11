@@ -127,7 +127,13 @@ function startMockAI() {
         const userContent = String((body.messages[1] && body.messages[1].content) || '');
         let content = '收到';
         if (system.includes('记忆压缩助手')) {
-          memoryRequests.push({ system, userContent, maxTokens: body.max_tokens });
+          memoryRequests.push({
+            system,
+            userContent,
+            maxTokens: body.max_tokens,
+            thinking: body.thinking,
+            reasoningEffort: body.reasoning_effort,
+          });
           content = memoryReply();
         } else {
           aiRequests.push({ system, messages: body.messages });
@@ -307,7 +313,7 @@ function ok(text) {
 }
 
 async function scenarioProfile() {
-  console.log('\n[1/3] 成员档案 profile');
+  console.log('\n[1/4] 成员档案 profile');
   mode = 'profile';
   setup('profile');
   startApp();
@@ -329,12 +335,12 @@ async function scenarioProfile() {
   );
   ok('profiles 归一化落盘（数组裁剪 8 项，字段保留）');
 
-  // 预算上浮：日预算 2000 + 默认 0.5 → max_tokens = 3000
+  // 预算上浮：日预算 2000 + 默认 1.0 → max_tokens = 4000
   assert(
-    memoryRequests.length > 0 && memoryRequests.every((r) => r.maxTokens === 3000),
-    `日压缩 max_tokens 应为 3000（实际 ${memoryRequests.map((r) => r.maxTokens).join(',')}）`
+    memoryRequests.length > 0 && memoryRequests.every((r) => r.maxTokens === 4000),
+    `日压缩 max_tokens 应为 4000（实际 ${memoryRequests.map((r) => r.maxTokens).join(',')}）`
   );
-  ok('输出预算按 budgetHeadroom 上浮（2000 → 3000）');
+  ok('输出预算按 budgetHeadroom 上浮（2000 → 4000）');
 
   const cookie = await login();
   await request('POST', '/api/messages', { text: '早上好' }, cookie);
@@ -363,6 +369,26 @@ async function checkPending(extraMemory, expectation) {
       .map((r) => r.maxTokens)
       .join(',')}）`
   );
+  if (expectation.thinking) {
+    assert(
+      memoryRequests.every((r) => JSON.stringify(r.thinking) === JSON.stringify(expectation.thinking)),
+      `thinking 应为 ${JSON.stringify(expectation.thinking)}（实际 ${memoryRequests
+        .map((r) => JSON.stringify(r.thinking))
+        .join(',')}）`
+    );
+  }
+  if (expectation.noEffort) {
+    assert(
+      memoryRequests.every((r) => r.reasoningEffort === undefined),
+      '关闭思考时不应附带 reasoning_effort'
+    );
+  }
+  if (expectation.effort) {
+    assert(
+      memoryRequests.every((r) => r.reasoningEffort === expectation.effort),
+      `reasoning_effort 应为 ${expectation.effort}`
+    );
+  }
   const entries = readDaily().entries;
   const found = (keyword) => entries.find((e) => String(e.content).includes(keyword));
   const agreed = found('答应');
@@ -379,10 +405,10 @@ async function checkPending(extraMemory, expectation) {
 }
 
 async function scenarioPending() {
-  console.log('\n[2/3] pending 关键词兜底');
+  console.log('\n[2/4] pending 关键词兜底');
   mode = 'pending';
-  await checkPending({}, { agreedStatus: 'pending', agreedImportance: 3, maxTokens: 3000 });
-  ok('默认配置：命中「答应 / 说好了」→ pending + importance=3，已完成的保持不变，预算上浮 50%');
+  await checkPending({}, { agreedStatus: 'pending', agreedImportance: 3, maxTokens: 4000 });
+  ok('默认配置：命中「答应 / 说好了」→ pending + importance=3，已完成的保持不变，预算上浮 100%');
   await checkPending(
     { pendingKeywords: [], budgetHeadroom: 0 },
     { agreedStatus: 'active', agreedImportance: 2, maxTokens: 2000 }
@@ -391,7 +417,7 @@ async function scenarioPending() {
 }
 
 async function scenarioPin() {
-  console.log('\n[3/3] 置顶记忆 pin');
+  console.log('\n[3/4] 置顶记忆 pin');
   mode = 'pin';
   setup('pin');
   startApp();
@@ -451,6 +477,33 @@ async function scenarioPin() {
   await stopScenario();
 }
 
+async function scenarioThinking() {
+  console.log('\n[4/4] 思考开关（thinking.mode）');
+  mode = 'pending';
+  await checkPending(
+    { thinking: { mode: 'off' } },
+    {
+      agreedStatus: 'pending',
+      agreedImportance: 3,
+      maxTokens: 4000,
+      thinking: { type: 'disabled' },
+      noEffort: true,
+    }
+  );
+  ok('mode=off → 下发 thinking:{type:disabled}，且不带 reasoning_effort');
+  await checkPending(
+    { thinking: { mode: 'on', enabled: true, sendEffort: true, effort: 'low' } },
+    {
+      agreedStatus: 'pending',
+      agreedImportance: 3,
+      maxTokens: 4000,
+      thinking: { type: 'enabled' },
+      effort: 'low',
+    }
+  );
+  ok('mode=on → 下发 thinking:{type:enabled} + reasoning_effort');
+}
+
 async function main() {
   console.log('记忆升级（档案 / 待办 / 置顶）自测开始');
   mockServer = await startMockAI();
@@ -458,6 +511,7 @@ async function main() {
     await scenarioProfile();
     await scenarioPending();
     await scenarioPin();
+    await scenarioThinking();
     console.log('\n🎉 记忆升级自测全部通过');
   } catch (err) {
     console.error('\n❌ 记忆升级自测失败：', err && err.message ? err.message : err);

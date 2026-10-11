@@ -72,6 +72,7 @@
 | `model` | 模型名 |
 | `temperature` / `maxTokens` | 采样温度与最大输出长度 |
 | `thinking.enabled` | 是否启用思考模型能力 |
+| `thinking.mode` | `auto`（默认，不下发）/ `on`（显式开启）/ `off`（显式关闭）；实测**思考 token 计入 `max_tokens`**，需要把输出额度留给正文时用 `off` |
 | `thinking.effort` | 思考强度 `low / medium / high` |
 | `thinking.sendEffort` | 是否发送 `reasoning_effort`（支持的服务商才设 `true`） |
 
@@ -141,11 +142,12 @@
 | `debug` | 是否在终端打印压缩结果摘要，默认 `false` |
 | `apiBaseUrl` / `apiKey` / `model` | 记忆压缩模型；地址/密钥留空时沿用第一个可用 AI |
 | `temperature` / `maxTokens` / `timeoutMs` | 压缩请求的采样温度、最大输出上限与超时 |
-| `thinking` | 记忆模型的思考模型兼容配置 |
+| `thinking` | 记忆模型的思考模型兼容配置（`mode: off` 可显式关闭思考，把 `maxTokens` 全留给正文） |
+| `model` / `maxTokens` | 输出上限差别很大（实测）：`deepseek-chat` / `deepseek-v4-flash` ≈ 8192，`deepseek-flash` ≈ 20000+，`deepseek-v4-pro` 更高；写满一个月约需 8–9k tokens，建议压缩模型选上限更大的 |
 | `maxInputChars` | 单次发给记忆模型的输入字符上限，超过会自动分段请求并合并 |
 | `backfillOnStartup` | 启动时是否扫描历史消息补齐缺失的记忆文件 |
 | `budgets.daily` / `weekly` / `monthly` / `quarter` / `year` | 各层压缩产物的目标 token 上限，默认 2k / 3k / 5k / 6k / 8k |
-| `budgetHeadroom` | 输出预算上浮比例，默认 `0.5`：实际 `max_tokens = 预算 × (1 + 上浮)`，给模型留余量避免被硬截断（实测 `deepseek-chat` 写满一个月约需 7–8k tokens）；`0` = 不预留，仍受 `maxTokens` 上限约束 |
+| `budgetHeadroom` | 输出预算上浮比例，默认 `1`：实际 `max_tokens = 预算 × (1 + 上浮)`，给模型留余量避免被硬截断（实测写满一个月约需 7–10k tokens，而月预算只有 5000）；`0` = 不预留，上限仍受 `maxTokens` 约束 |
 | `prompts.daily` / `weekly` / `monthly` / `quarter` / `year` | 各层压缩策略提示词，留空用内置默认；**只影响「怎么压缩」，输出 JSON 格式与分类白名单由服务端固定追加**；也可以在设置界面「长期记忆 → 各层压缩提示词」里直接改 |
 | `pendingKeywords` | 「未完成的约定」关键词兜底，默认 `答应 / 约定 / 说好 / 别忘 / 待定 / 改天 / 下次 / 记得 / 欠 / 请客`；命中即标为 `pending` + `importance=3`，配成 `[]` 关闭 |
 | `storageDir` | 记忆文件目录，默认 `data/memory` |
@@ -226,7 +228,8 @@ AI 回复**只输出纯正文**（不再包 `[日期][时间][名字]{...}`）�
 各层压缩共用同一套健壮性策略，避免"一层坏掉、全线停摆"：
 
 - **输出被截断不算失败**：模型撞到 `max_tokens`（`finish_reason=length`）时，服务端会把已经写完整的条目逐条抢救出来落盘，丢掉最后那条写了一半的，并在日志与设置页标注"输出被截断"。
-- **预算留余量**：实际 `max_tokens` 是各层预算的 `1 + memory.budgetHeadroom`（默认 0.5，即多给 50%）倍，预算本身仍是提示词里的目标值，避免模型写到一半被硬截断；上限仍由 `memory.maxTokens` 封顶。
+- **预算留余量**：实际 `max_tokens` 是各层预算的 `1 + memory.budgetHeadroom`（默认 1，即多给 100%）倍，预算本身仍是提示词里的目标值，避免模型写到一半被硬截断；上限仍由 `memory.maxTokens` 封顶（所以要真正放大额度，`maxTokens` 也要一起提高）。
+- **给足输出上限**：截断的根因是模型自身的输出天花板。实测 `deepseek-chat` / `deepseek-v4-flash` ≈ 8192，`deepseek-flash` ≈ 20000+，`deepseek-v4-pro` 更高；把一个月的记忆写完整大约需要 8–9k tokens，所以压缩模型建议选上限更大的（如 `deepseek-flash`）并把 `memory.maxTokens` 相应提高。另外实测**思考 token 也计入这个额度**，压缩用 `memory.thinking.mode: "off"` 可以把额度全留给正文。
 - **各层互不阻塞**：日/周/月/季/年各自 `try/catch`。月压缩失败不会再让日压缩停下来，季/年也不会被月拖住。
 - **进度分段落盘**：每压缩完一天/一个周期就写一次 `_state.json`，后面失败也不会丢掉前面的进度。
 - **失败退避**：周期层（周/月/季/年）压缩失败后有 5 分钟冷却，避免每条群消息都去重复请求同一个必然失败的压缩；日层不设冷却，保持"失败后立刻重试"。

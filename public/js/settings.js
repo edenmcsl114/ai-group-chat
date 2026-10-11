@@ -84,6 +84,13 @@ function redirectIfInvalid(res) {
 const THINKING_FIELDS = [
   { path: 'thinking.enabled', label: '启用思考模型', type: 'checkbox' },
   {
+    path: 'thinking.mode',
+    label: '思考开关（显式）',
+    type: 'select',
+    options: ['auto', 'on', 'off'],
+    hint: 'off = 明确关闭（默认就会思考的模型用它把额度全留给正文）；on = 明确开启；auto = 只看下面的强度配置',
+  },
+  {
     path: 'thinking.effort',
     label: '思考强度',
     type: 'select',
@@ -218,7 +225,7 @@ const MEMORY_FIELDS = [
     step: '0.05',
     min: 0,
     max: 2,
-    hint: '实际 max_tokens = 各层预算 × (1+上浮)；默认 0.5（多给 50%，实测月压缩需要），0 = 不预留',
+    hint: '实际 max_tokens = 各层预算 × (1+上浮)；默认 1（多给 100%，实测月压缩需要），0 = 不预留',
   },
   {
     path: 'memory.pendingKeywords',

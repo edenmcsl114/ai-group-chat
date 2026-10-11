@@ -823,10 +823,11 @@ function getMemorySettings() {
     budgets,
     // 输出预算上浮：实际 max_tokens = 每片预算 × (1 + budgetHeadroom)，
     // 预算本身仍是提示词里的目标值，上浮只作为「别被硬截断」的余量。0 = 不预留。
-    // 实测 deepseek-chat 写一个月的记忆约需 7–8k tokens，默认给 50% 余量。
+    // 实测 deepseek-chat 写一个月的记忆约需 7–10k tokens（月预算只有 5000），
+    // 所以默认给 100% 余量；因为上限同时受 maxTokens 封顶，配置小的用户不受影响。
     budgetHeadroom: (() => {
       const n = Number(raw.budgetHeadroom);
-      if (!Number.isFinite(n) || n < 0) return 0.5;
+      if (!Number.isFinite(n) || n < 0) return 1;
       return Math.min(2, n);
     })(),
   });
@@ -1789,6 +1790,30 @@ function memorySystemPrompt(level, budget, isUpRoll, timeNote) {
   return parts.join('\n');
 }
 
+// 思考模型参数：mode = on / off 时显式下发 thinking.type；auto 保持旧行为
+// （只按 enabled + sendEffort 决定是否附带 reasoning_effort）。
+// 实测：这个接口里思考 token 计入 completion_tokens，也就是和 max_tokens 共用额度，
+// 所以「要写满正文」的压缩调用建议 mode: 'off'。
+function applyThinkingOptions(body, thinking) {
+  const options = thinking || {};
+  const mode = String(options.mode == null ? 'auto' : options.mode).trim().toLowerCase();
+  if (mode === 'off') {
+    body.thinking = { type: 'disabled' };
+    return body;
+  }
+  if (mode === 'on') {
+    body.thinking = { type: 'enabled' };
+  }
+  if (
+    options.enabled &&
+    options.sendEffort &&
+    ['low', 'medium', 'high'].includes(options.effort)
+  ) {
+    body.reasoning_effort = options.effort;
+  }
+  return body;
+}
+
 async function requestMemoryCompression(settings, level, content, budget, isUpRoll, timeNote) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(settings.timeoutMs) || 60000);
@@ -1810,14 +1835,7 @@ async function requestMemoryCompression(settings, level, content, budget, isUpRo
       )
     ),
   };
-  const thinking = settings.thinking || {};
-  if (
-    thinking.enabled &&
-    thinking.sendEffort &&
-    ['low', 'medium', 'high'].includes(thinking.effort)
-  ) {
-    body.reasoning_effort = thinking.effort;
-  }
+  applyThinkingOptions(body, settings.thinking);
   try {
     const res = await fetch(`${settings.apiBaseUrl}/chat/completions`, {
       method: 'POST',
@@ -2646,14 +2664,7 @@ async function performAIReply(agent, snapshot, depth, stormId) {
       max_tokens: agent.maxTokens || 1024,
     };
     // 思考模型兼容：按配置附带 reasoning_effort（只发给支持的服务商）
-    const thinking = agent.thinking || {};
-    if (
-      thinking.enabled &&
-      thinking.sendEffort &&
-      ['low', 'medium', 'high'].includes(thinking.effort)
-    ) {
-      body.reasoning_effort = thinking.effort;
-    }
+    applyThinkingOptions(body, agent.thinking);
 
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
@@ -3434,14 +3445,7 @@ async function requestSelfJudgement(agent, snapshot, priorJudgements) {
     temperature: endpoint.temperature,
     max_tokens: endpoint.maxTokens,
   };
-  const thinking = endpoint.thinking || {};
-  if (
-    thinking.enabled &&
-    thinking.sendEffort &&
-    ['low', 'medium', 'high'].includes(thinking.effort)
-  ) {
-    body.reasoning_effort = thinking.effort;
-  }
+  applyThinkingOptions(body, endpoint.thinking);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), endpoint.timeoutMs);
   try {
@@ -4189,6 +4193,9 @@ function normalizeSettings(raw) {
     bool(thinking, 'enabled');
     bool(thinking, 'sendEffort');
     str(thinking, 'effort');
+    if (thinking.mode !== undefined) {
+      thinking.mode = String(thinking.mode).trim().toLowerCase();
+    }
   };
   const normalizeSelfDecision = (sd) => {
     if (!isPlainObject(sd)) return;
@@ -4298,6 +4305,12 @@ function validateThinking(thinking, label, errors, numeric, boolean) {
   }
   if (thinking.enabled !== undefined) boolean(thinking.enabled, `${label}.enabled`);
   if (thinking.sendEffort !== undefined) boolean(thinking.sendEffort, `${label}.sendEffort`);
+  if (
+    thinking.mode !== undefined &&
+    !['auto', 'on', 'off'].includes(String(thinking.mode).trim().toLowerCase())
+  ) {
+    errors.push(`${label}.mode 只能是 auto / on / off`);
+  }
   if (thinking.effort !== undefined && !['low', 'medium', 'high'].includes(String(thinking.effort))) {
     errors.push(`${label}.effort 只能是 low / medium / high`);
   }
