@@ -1748,6 +1748,7 @@ function memorySystemPrompt(level, budget, isUpRoll, timeNote) {
   const custom = ((config.memory && config.memory.prompts) || {})[level];
   const hasCustom = typeof custom === 'string' && custom.trim().length > 0;
   const template = hasCustom ? custom : MEMORY_DEFAULT_PROMPTS[level] || '';
+  // 仅供自定义提示词里的 {{maxEntries}} 占位符使用：固定段落已不再强制条数上限
   const maxEntries = Math.max(8, Math.floor(Math.max(1, Number(budget) || 1) / 55));
   const upRollText = isUpRoll
     ? '输入已经是较低层级的记忆条目：请更新旧信息、合并同类项，新信息覆盖旧信息，避免重复。'
@@ -1767,24 +1768,24 @@ function memorySystemPrompt(level, budget, isUpRoll, timeNote) {
     `你是群聊长期记忆压缩助手。本次压缩的是${levelLabel || ''}的群聊内容，供群成员 AI 之后参考。`,
     timeNote ? `【时间范围】${timeNote}。所有时间都要写成绝对日期，不要用「明天 / 下周」这类相对说法。` : '',
     strategy,
-    '必须区分「哪个成员」和「什么时间」。',
-    `分类只允许：${MEMORY_CATEGORIES.join('、')}。`,
-    `「${MEMORY_DROP_CATEGORY}」不要输出；「临时信息」保留并标注。`,
-    '输出格式固定（JSONL：一行一个 JSON 对象，不要数组、不要代码块、不要解释、不要多余文字）：',
-    '{"type":"entry","category":"事件","member":"小智","time":"2026-09-10 14:03","topic":"百合海老聚餐","importance":3,"status":"pending","content":"杏请客，定档 9/25 晚上"}',
-    '{"type":"profile","member":"eden","identity":"群主；真人","aliases":["阿雪（已废弃）"],"relations":[],"preferences":["剧情类/孤寂感作品"],"ongoing":["2b2t 铺 CLANNAD 地图画"],"pending":[],"resolved":["百合海老聚餐（9/25 已举行）"],"notes":"作息约 22 点睡"}',
-    '每一行必须是上述两种之一；没有新信息的成员不要输出 profile 行；数值字段不要加引号。',
-    '【字段规则】importance 取 1/2/3：3 = 必须保留（承诺与约定、身份与称呼、关系变化、重要事件、明确长期偏好、进行中的项目），2 = 较重要，1 = 一般。' +
-      'status 取 active（一般）/ pending（未完成）/ done（已完成）/ expired（已过时）。' +
-      'topic 是同一件事的短主题名（如「百合海老聚餐」「2b2t-CLANNAD」），同一件事必须用同一个 topic，便于合并与新旧覆盖。',
-    '【必须保留】importance=3 的条目在任何层级都只能合并、不能删除；status=pending 的条目必须一直被保留，直到它被标为 done 或 expired。',
-    '【上卷顺序】先逐条检查输入里所有 status=pending 与 importance=3 的条目，确认保留、更新或标注为已解决，再压缩其余条目；' +
-      '同一 topic 出现新旧冲突时（例如「催定档」与「已定档」），只保留更新的那条，旧说法不要输出。',
-    '【成员档案 profiles】每个成员一份「当前状态快照」，不是流水账：identity/aliases/relations/preferences/ongoing/pending/resolved/notes 都是短句数组，' +
-      '过时信息要更新掉而不是追加；pending 只留真正未完成的，完成或取消的移到 resolved；只输出本层有新信息的成员。',
-    '【置顶记忆】如果输入里给了「成员档案」或「置顶记忆」，必须当成事实保留与更新，不得丢弃。',
-    `篇幅硬限制（必须遵守）：entries 总数不超过 ${maxEntries} 条，每条 content 不超过 40 字；profiles 每个数组字段不超过 8 项、每项不超过 40 字。`,
-    `总输出必须在 ${budget} tokens 以内写完，写完立刻停止；宁可少写几条，也不要写不完被截断。`,
+    '【内容要求】',
+    '1. 每条都要能看出「哪个成员」「什么时间」；同一个人同一件事只留一条，合并同类项，不要重复。',
+    `2. 分类只允许：${MEMORY_CATEGORIES.join('、')}；「${MEMORY_DROP_CATEGORY}」不要输出，「临时信息」保留并标注。`,
+    '3. 只保留之后仍然有用的信息：重复的客套与纯寒暄丢掉；同一件事状态变了只保留新的那条；原文可以直接照抄成一句话的就别拆成多条。',
+    '【输出格式】固定为 JSONL，每行一个 JSON 对象（不要数组、不要代码块、不要解释、不要多余文字）。' +
+      '每行的 type 只能是 entry 或 profile；下面两行是字段模板，值自行填写，不要把尖括号占位符原样输出：',
+    '{"type":"entry","category":"<分类>","member":"<成员名>","time":"<YYYY-MM-DD HH:MM>","topic":"<主题>","importance":<1-3>,"status":"<状态>","content":"<一句话概括>"}',
+    '{"type":"profile","member":"<成员名>","identity":"<身份>","aliases":[],"relations":[],"preferences":[],"ongoing":[],"pending":[],"resolved":[],"notes":""}',
+    '数值字段不要加引号；没有生成 entry 的成员不要输出 profile 行。',
+    '【字段取值】importance：3 = 必须长期保留（承诺与约定、身份与称呼、关系变化、重要事件、明确长期偏好、进行中的项目），2 = 较重要，1 = 一般；' +
+      `status：${MEMORY_STATUSES.join(' / ')}；` +
+      'topic：同一件事用同一个短主题名，便于合并与新旧覆盖；content：一句话说清，不要照抄原文。',
+    '【必须保留】importance=3 的条目在任何层级都只能合并、不能删除；status=pending 的条目要一直保留，直到被标为 done 或 expired。',
+    '【上卷顺序】先逐条检查输入里所有 status=pending 与 importance=3 的条目，确认保留、更新或标注为已解决，再处理其余条目；' +
+      '同一 topic 出现新旧冲突时只保留更新的那条，旧说法不要输出。',
+    '【成员档案 profiles】每个成员一份「当前状态快照」，不是流水账：identity / aliases / relations / preferences / ongoing / pending / resolved / notes 都写短句；' +
+      '过时信息要更新掉而不是追加；pending 只留真正未完成的，完成或取消的移到 resolved。',
+    '【置顶记忆】输入里如果给了「成员档案」或「置顶记忆」，必须当成事实保留与更新，不得丢弃。',
   ].filter((line) => String(line || '').trim());
   if (upRollText && !usesUpRollPlaceholder) parts.push(upRollText);
   return parts.join('\n');
